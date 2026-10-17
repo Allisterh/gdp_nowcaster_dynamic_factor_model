@@ -218,10 +218,44 @@ def assert_no_lookahead(evaluation_date: str, target_quarter_start: str) -> None
         )
 
 
+def assert_before_release(evaluation_date, release_date) -> None:
+    """
+    Hard check for the through-the-quarter evaluation: a nowcast must be made
+    strictly before the target quarter's GDP is first published.
+    (assert_no_lookahead() is the stricter quarter-end version.)
+    """
+    if pd.Timestamp(evaluation_date) >= pd.Timestamp(release_date):
+        raise AssertionError(
+            f"LOOK-AHEAD DETECTED: evaluation_date={pd.Timestamp(evaluation_date).date()} "
+            f"is on/after the GDP release {pd.Timestamp(release_date).date()}."
+        )
+
+
+def fetch_gdpnow_vintage(target_quarter, evaluation_date, use_cache: bool = True) -> float:
+    """
+    GDPNow's estimate for target_quarter as published on evaluation_date
+    (compounded annual rate, as GDPNow reports it), or NaN if none existed.
+
+    ALFRED's GDPNow archive starts 2016-05-17, and GDPNow publishes its first
+    estimate for a quarter roughly a month into it, so early dates are NaN.
+    """
+    if pd.Timestamp(evaluation_date) < pd.Timestamp("2016-05-17"):
+        return float("nan")
+    try:
+        s = fetch_vintage_series("GDPNOW", str(pd.Timestamp(evaluation_date).date()),
+                                 start="2014-01-01", use_cache=use_cache)
+    except ValueError:
+        return float("nan")
+    s.index = pd.DatetimeIndex(s.index).to_period("Q").to_timestamp()
+    v = s.get(pd.Timestamp(target_quarter).to_period("Q").to_timestamp(), float("nan"))
+    return float(v) if pd.notna(v) else float("nan")
+
+
 def build_vintage_dfm_data(
     as_of_date: str,
     start: str = "2000-01-01",
     use_cache: bool = True,
+    target_quarter: pd.Timestamp | str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build the DFM panel (monthly_df, quarterly_df) using ALFRED vintage data.
@@ -342,9 +376,21 @@ def build_vintage_dfm_data(
     # the target: a single-row extension would leave a hole in the index and
     # crash pandas' frequency-conformance check (see dfm.py for the same fix
     # and the concrete failure mode).
+    #
+    # target_quarter (optional) lets the nowcast date fall AFTER the target
+    # quarter has ended but before its GDP is published (the through-the-
+    # quarter evaluation). The vintage then cannot contain the target's GDP;
+    # if it does, the evaluation date is past the release — a look-ahead error.
     current_qtr = as_of_ts.to_period("Q").to_timestamp()
-    if gdp_growth.index[-1] < current_qtr:
-        full_index = pd.date_range(gdp_growth.index[0], current_qtr, freq="QS-JAN")
+    target_qtr = (pd.Timestamp(target_quarter).to_period("Q").to_timestamp()
+                  if target_quarter is not None else current_qtr)
+    if target_qtr in gdp_growth.index and pd.notna(gdp_growth.loc[target_qtr]):
+        raise AssertionError(
+            f"LOOK-AHEAD DETECTED: the {as_of_date} vintage already contains GDP for "
+            f"{target_qtr.date()} — that quarter was published before the evaluation date."
+        )
+    if gdp_growth.index[-1] < target_qtr:
+        full_index = pd.date_range(gdp_growth.index[0], target_qtr, freq="QS-JAN")
         gdp_growth = gdp_growth.reindex(full_index)
 
     quarterly_df = pd.DataFrame({"GDPC1": gdp_growth})

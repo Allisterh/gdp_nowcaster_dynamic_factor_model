@@ -283,6 +283,8 @@ Design fixed BEFORE any results were computed (commit this entry first):
   coverage, PIT histogram, CRPS. These bands ignore parameter uncertainty; expect
   under-coverage, report it either way.
 - No model changes in response to these results.
+- Addendum (before running): each quarter's last day is added to the 14-day grid so
+  every quarter also has the Phase 7 quarter-end nowcast (spot-check + continuity).
 
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3

@@ -184,3 +184,75 @@ def comparison_tests(df: pd.DataFrame, model: str = "DFM") -> pd.DataFrame:
                     "dm_stat": dm["stat"], "dm_pvalue": dm["pvalue"],
                 })
     return pd.DataFrame(rows)
+
+
+# ── Through-the-quarter (horizon) evaluation ──────────────────────────────────
+
+HORIZON_BUCKETS: list[tuple[str, int, int]] = [
+    # label, min days to release (inclusive), max (inclusive)
+    (">60 days before release", 61, 10_000),
+    ("31–60 days before release", 31, 60),
+    ("1–30 days before release", 1, 30),
+]
+
+
+def horizon_bucket(days_to_release: pd.Series) -> pd.Series:
+    """Map days-until-GDP-release to the pre-registered reporting buckets."""
+    out = pd.Series(pd.NA, index=days_to_release.index, dtype="object")
+    for label, lo, hi in HORIZON_BUCKETS:
+        out[(days_to_release >= lo) & (days_to_release <= hi)] = label
+    return out
+
+
+def horizon_accuracy(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    accuracy_table() computed separately within each horizon bucket.
+
+    df needs a 'days_to_release' column plus the usual nowcast/target columns.
+    Returns long format with an extra 'horizon' column.
+    """
+    b = horizon_bucket(df["days_to_release"])
+    parts = []
+    for label, *_ in HORIZON_BUCKETS:
+        sub = df[b == label]
+        if len(sub):
+            parts.append(accuracy_table(sub).assign(horizon=label))
+    return pd.concat(parts, ignore_index=True)
+
+
+# ── Interval / density forecast evaluation ────────────────────────────────────
+
+def interval_coverage(nowcast, se, actual, level: float) -> float:
+    """
+    Share of actuals inside the central Gaussian interval nowcast ± z·se.
+    A calibrated 90% interval covers ~90% of outcomes.
+    """
+    d = pd.DataFrame({"m": nowcast, "s": se, "y": actual}).dropna()
+    if d.empty:
+        return float("nan")
+    z = stats.norm.ppf(0.5 + level / 2)
+    return float(((d["y"] - d["m"]).abs() <= z * d["s"]).mean())
+
+
+def pit_values(nowcast, se, actual) -> np.ndarray:
+    """
+    Probability integral transform: Φ((actual − nowcast)/se). Uniform on
+    [0, 1] if the Gaussian forecast distribution is correct; piling up at 0
+    and 1 means the bands are too narrow.
+    """
+    d = pd.DataFrame({"m": nowcast, "s": se, "y": actual}).dropna()
+    return np.asarray(stats.norm.cdf((d["y"] - d["m"]) / d["s"]))
+
+
+def gaussian_crps(nowcast, se, actual) -> float:
+    """
+    Mean continuous ranked probability score of N(nowcast, se²) forecasts
+    (closed form; Gneiting & Raftery 2007). Same units as the data; lower is
+    better; reduces to absolute error as se → 0.
+    """
+    d = pd.DataFrame({"m": nowcast, "s": se, "y": actual}).dropna()
+    if d.empty:
+        return float("nan")
+    z = (d["y"] - d["m"]) / d["s"]
+    crps = d["s"] * (z * (2 * stats.norm.cdf(z) - 1) + 2 * stats.norm.pdf(z) - 1 / np.sqrt(np.pi))
+    return float(crps.mean())
