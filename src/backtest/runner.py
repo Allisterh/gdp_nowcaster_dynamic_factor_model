@@ -43,9 +43,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.backtest.vintage import assert_no_lookahead, build_vintage_dfm_data
+from src.backtest.vintage import (
+    assert_no_lookahead,
+    build_vintage_dfm_data,
+    fetch_gdp_first_release,
+)
 from src.data.fred_loader import fetch_series, transform_series
-from src.model.baseline import ar1_nowcast, fit_ar1
+from src.model.baseline import ar1_nowcast, fit_ar1, fit_ar1_robust, mean_nowcast
 from src.model.dfm import extract_nowcast, fit_dfm, make_block_structure
 
 logger = logging.getLogger(__name__)
@@ -92,25 +96,29 @@ def backtest_quarter_range(
     return result
 
 
-def _ar1_nowcast_vintage(quarterly_df: pd.DataFrame) -> float:
+def _baseline_nowcasts_vintage(quarterly_df: pd.DataFrame) -> dict[str, float]:
     """
-    Fit AR(1) on the vintage quarterly GDP panel and predict the current quarter.
+    Real-time benchmark nowcasts from the vintage quarterly GDP panel.
 
-    Why fit AR(1) on vintage data here (not current-vintage):
-      The DFM is evaluated on vintage data, so for a fair comparison the AR(1)
-      should also only use information available on the evaluation date.
+    All three use only GDP growth published by the evaluation date, so they
+    face the same information constraint as the DFM:
+      ar1_nowcast_qtr        : OLS AR(1) (the original baseline)
+      ar1_robust_nowcast_qtr : Huber-robust AR(1) — not dragged to beta ≈ 1 by
+                               the 2020 crash-and-rebound pair
+      mean_nowcast_qtr       : expanding mean of growth since the sample start
 
-    Returns
-    -------
-    float
-        AR(1) nowcast of current-quarter GDP growth (quarterly %, not annualized).
+    Returns quarterly % (not annualized); NaN if fewer than 4 quarters exist.
     """
     gdp = quarterly_df["GDPC1"].dropna()
     if len(gdp) < 4:
-        return float("nan")
-    ar1 = fit_ar1(gdp)
+        return {k: float("nan") for k in
+                ("ar1_nowcast_qtr", "ar1_robust_nowcast_qtr", "mean_nowcast_qtr")}
     last_gdp = float(gdp.iloc[-1])
-    return float(ar1_nowcast(ar1, last_gdp)["nowcast_qtr_pct"])
+    return {
+        "ar1_nowcast_qtr":        float(ar1_nowcast(fit_ar1(gdp), last_gdp)["nowcast_qtr_pct"]),
+        "ar1_robust_nowcast_qtr": float(ar1_nowcast(fit_ar1_robust(gdp), last_gdp)["nowcast_qtr_pct"]),
+        "mean_nowcast_qtr":       mean_nowcast(gdp)["nowcast_qtr_pct"],
+    }
 
 
 def run_single_quarter(
@@ -173,11 +181,13 @@ def run_single_quarter(
             "quarter_label":   qtr_label,
             "dfm_nowcast_qtr": float("nan"),
             "ar1_nowcast_qtr": float("nan"),
+            "ar1_robust_nowcast_qtr": float("nan"),
+            "mean_nowcast_qtr": float("nan"),
             "converged":       False,
         }
 
-    # AR(1) from same vintage data
-    ar1_qtr = _ar1_nowcast_vintage(quarterly_df)
+    # Benchmarks from the same vintage data
+    baselines = _baseline_nowcasts_vintage(quarterly_df)
 
     # DFM — build block structure from the vintage panel
     fb = factor_blocks
@@ -202,7 +212,7 @@ def run_single_quarter(
         "evaluation_date": evaluation_date,
         "quarter_label":   qtr_label,
         "dfm_nowcast_qtr": dfm_qtr,
-        "ar1_nowcast_qtr": ar1_qtr,
+        **baselines,
         "converged":       converged,
     }
 
@@ -263,11 +273,15 @@ def run_backtest(
           quarter_label    : "2020 Q1"
           target_quarter   : pd.Timestamp
           evaluation_date  : str
-          dfm_nowcast_ann  : float  (annualized %)
-          ar1_nowcast_ann  : float  (annualized %)
-          actual_ann       : float  (annualized %, current-vintage GDP)
-          dfm_error_ann    : float  (dfm_nowcast_ann − actual_ann)
-          ar1_error_ann    : float  (ar1_nowcast_ann − actual_ann)
+          dfm_nowcast_ann        : float  (annualized %)
+          ar1_nowcast_ann        : float  (annualized %, OLS AR(1))
+          ar1_robust_nowcast_ann : float  (annualized %, Huber AR(1))
+          mean_nowcast_ann       : float  (annualized %, expanding mean)
+          actual_ann             : float  (annualized %, current-vintage GDP)
+          first_release_ann      : float  (annualized %, as first published)
+          first_release_date     : date the first estimate was published
+          dfm_error_ann          : float  (dfm_nowcast_ann − actual_ann)
+          ar1_error_ann          : float  (ar1_nowcast_ann − actual_ann)
           is_2020          : bool
           converged        : bool
     """
@@ -277,6 +291,14 @@ def run_backtest(
     actual_gdp = _fetch_current_gdp_actuals(start=start_data)
 
     quarter_list = backtest_quarter_range(start_qs, end_qs)
+
+    # Second scoring target: GDP growth as first published (advance estimate).
+    try:
+        first_release = fetch_gdp_first_release([q for q, _ in quarter_list],
+                                                use_cache=use_cache)
+    except Exception as exc:
+        logger.warning("First-release GDP unavailable (%s); column left NaN.", exc)
+        first_release = pd.DataFrame(columns=["first_release_ann", "first_release_date"])
     n = len(quarter_list)
     rows = []
 
@@ -298,33 +320,31 @@ def run_backtest(
             use_cache=use_cache,
         )
 
-        # Look up actual GDP for this quarter from the current-vintage series
-        actual_qtr = actual_gdp.get(target_q, float("nan"))
-        if pd.isna(actual_qtr):
-            # Handle minor date alignment differences (QS vs QE)
-            nearby = [d for d in actual_gdp.index if abs((d - target_q).days) <= 10]
-            actual_qtr = float(actual_gdp.loc[nearby[0]]) if nearby else float("nan")
-
-        actual_ann     = float(actual_qtr) * 4 if not pd.isna(actual_qtr) else float("nan")
-        dfm_ann        = res["dfm_nowcast_qtr"] * 4 if not pd.isna(res["dfm_nowcast_qtr"]) else float("nan")
-        ar1_ann        = res["ar1_nowcast_qtr"] * 4 if not pd.isna(res["ar1_nowcast_qtr"]) else float("nan")
-        dfm_error      = dfm_ann - actual_ann if not (pd.isna(dfm_ann) or pd.isna(actual_ann)) else float("nan")
-        ar1_error      = ar1_ann - actual_ann if not (pd.isna(ar1_ann) or pd.isna(actual_ann)) else float("nan")
+        # NaN propagates through * and −, so a failed fit or a missing actual
+        # simply yields NaN errors (excluded from every statistic).
+        actual_ann = float(actual_gdp.get(target_q, float("nan"))) * 4
+        dfm_ann    = res["dfm_nowcast_qtr"] * 4
+        ar1_ann    = res["ar1_nowcast_qtr"] * 4
 
         status = "✓" if res["converged"] else "FAILED"
         print(f"DFM={dfm_ann:>+6.1f}%  actual={actual_ann:>+6.1f}%  {status}")
 
+        fr = first_release.loc[target_q] if target_q in first_release.index else None
         rows.append({
-            "quarter_label":   res["quarter_label"],
-            "target_quarter":  target_q,
-            "evaluation_date": eval_date,
-            "dfm_nowcast_ann": dfm_ann,
-            "ar1_nowcast_ann": ar1_ann,
-            "actual_ann":      actual_ann,
-            "dfm_error_ann":   dfm_error,
-            "ar1_error_ann":   ar1_error,
-            "is_2020":         target_q.year == 2020,
-            "converged":       res["converged"],
+            "quarter_label":          res["quarter_label"],
+            "target_quarter":         target_q,
+            "evaluation_date":        eval_date,
+            "dfm_nowcast_ann":        dfm_ann,
+            "ar1_nowcast_ann":        ar1_ann,
+            "ar1_robust_nowcast_ann": res["ar1_robust_nowcast_qtr"] * 4,
+            "mean_nowcast_ann":       res["mean_nowcast_qtr"] * 4,
+            "actual_ann":             actual_ann,
+            "first_release_ann":      float(fr["first_release_ann"]) if fr is not None else float("nan"),
+            "first_release_date":     fr["first_release_date"] if fr is not None else pd.NaT,
+            "dfm_error_ann":          dfm_ann - actual_ann,
+            "ar1_error_ann":          ar1_ann - actual_ann,
+            "is_2020":                target_q.year == 2020,
+            "converged":              res["converged"],
         })
 
     df = pd.DataFrame(rows)

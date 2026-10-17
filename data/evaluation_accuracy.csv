@@ -1,0 +1,37 @@
+target,sample,model,n,rmse,mae,bias
+current vintage,ex-2020,DFM 2-factor,40,1.7304,1.4117,-0.3455
+current vintage,ex-2020,AR(1),40,1.9338,1.4498,-0.819
+current vintage,ex-2020,Robust AR(1),40,1.7199,1.2863,-0.4991
+current vintage,ex-2020,Expanding mean,40,1.8357,1.4126,-0.807
+current vintage,ex-2020,GDPNow,35,1.328,1.0814,-0.1263
+current vintage,full,DFM 2-factor,44,4.4404,2.3065,0.2305
+current vintage,full,AR(1),44,11.103,3.932,-1.5504
+current vintage,full,Robust AR(1),44,8.1189,3.1325,-0.5627
+current vintage,full,Expanding mean,44,7.0904,2.9487,-0.4874
+current vintage,full,GDPNow,39,3.4338,1.8125,-0.2714
+current vintage,2020 only,DFM 2-factor,4,13.6726,11.2549,5.9905
+current vintage,2020 only,AR(1),4,36.3133,28.754,-8.8642
+current vintage,2020 only,Robust AR(1),4,26.3722,21.5948,-1.1983
+current vintage,2020 only,Expanding mean,4,22.7884,18.3087,2.7089
+current vintage,2020 only,GDPNow,4,9.9763,8.2099,-1.5409
+first release,ex-2020,DFM 2-factor,40,1.7675,1.3087,0.0379
+first release,ex-2020,AR(1),40,1.874,1.3072,-0.4355
+first release,ex-2020,Robust AR(1),40,1.7011,1.2314,-0.1157
+first release,ex-2020,Expanding mean,40,1.7629,1.2699,-0.4235
+first release,ex-2020,GDPNow,35,0.9848,0.7074,0.1561
+first release,full,DFM 2-factor,44,5.2986,2.3479,0.7742
+first release,full,AR(1),44,11.4216,3.9113,-1.0066
+first release,full,Robust AR(1),44,8.6663,3.1915,-0.019
+first release,full,Expanding mean,44,7.7782,2.9277,0.0564
+first release,full,GDPNow,39,2.4424,1.2658,0.2022
+first release,2020 only,DFM 2-factor,4,16.6608,12.7398,8.1372
+first release,2020 only,AR(1),4,37.4148,29.9516,-6.7176
+first release,2020 only,Robust AR(1),4,28.2348,22.7924,0.9484
+first release,2020 only,Expanding mean,4,25.1879,19.5064,4.8555
+first release,2020 only,GDPNow,4,7.0483,6.151,0.6058
+current vintage,ex-2020,DFM 1-factor,40,1.7525,1.4028,-0.2856
+current vintage,full,DFM 1-factor,44,2.9589,1.98,-0.0575
+current vintage,2020 only,DFM 1-factor,4,8.0988,7.7527,2.2231
+first release,ex-2020,DFM 1-factor,40,1.8236,1.2999,0.0979
+first release,full,DFM 1-factor,44,3.4827,2.0215,0.4862
+first release,2020 only,DFM 1-factor,4,10.0085,9.2375,4.3697

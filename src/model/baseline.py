@@ -110,6 +110,44 @@ def ar1_nowcast(results, last_gdp_growth: float) -> dict:
     }
 
 
+def fit_ar1_robust(gdp_growth: pd.Series):
+    """
+    AR(1) estimated by robust (Huber) regression instead of OLS.
+
+    Why this exists:
+      OLS gives every quarter equal say, so one extreme pair — 2020 Q2's −9%
+      quarter followed by Q3's +7.5% — can drag β toward 1 and make the AR(1)
+      forecast "another crash" right after the rebound. Huber regression
+      down-weights observations with large residuals automatically, using
+      only the data available at the time (no hindsight about which quarters
+      were "special"). It is a fairer baseline for 2020 and after.
+
+    Limitation: Huber limits the influence of large RESIDUALS, not of extreme
+      regressors. After the rebound, the (−9% → +7.5%) pair is a high-leverage
+      point that still pulls β negative — less than under OLS, but not zero.
+
+    Returns a statsmodels RLM results object whose params use the same names
+    as fit_ar1() ('const', 'gdp_lag1'), so ar1_nowcast() works on either.
+    """
+    clean = gdp_growth.dropna()
+    y     = clean.iloc[1:].reset_index(drop=True)
+    X_lag = clean.iloc[:-1].reset_index(drop=True)
+    X_lag.name = "gdp_lag1"
+    return sm.RLM(y, sm.add_constant(X_lag), M=sm.robust.norms.HuberT()).fit()
+
+
+def mean_nowcast(gdp_growth: pd.Series) -> dict:
+    """
+    The "no information" benchmark: forecast the historical average growth.
+
+    Uses every released quarter in gdp_growth (an expanding window when called
+    once per real-time vintage). If a model cannot beat this, its signal is
+    not adding anything beyond knowing the long-run average.
+    """
+    m = float(gdp_growth.dropna().mean())
+    return {"nowcast_qtr_pct": m, "nowcast_ann_pct": m * 4}
+
+
 def print_ar1_summary(results, nowcast: dict | None = None) -> None:
     """Print a plain-English summary of the fitted AR(1) model."""
     alpha = results.params["const"]
