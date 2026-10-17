@@ -310,7 +310,7 @@ button, input, select, textarea {
     box-shadow: var(--shadow-sm);
     overflow: hidden;
     margin-bottom: 0.5rem;
-    padding: 0.7rem 0.9rem 0.3rem;
+    padding: 0.7rem 0 0.3rem;   /* no side padding: Plotly sizes to the full card width */
 }
 
 
