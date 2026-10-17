@@ -35,6 +35,11 @@ from src.data.fred_loader import SERIES_CATALOG, build_panel
 
 logger = logging.getLogger(__name__)
 
+# BEA publishes the advance GDP estimate roughly 30 days after quarter end
+# (e.g., Q1 → late April). Used to decide which GDP quarters were public on
+# a given date. Approximate: actual dates vary by a few days.
+GDP_ADVANCE_LAG_DAYS = 30
+
 # ── Phase 3: blocked factor structure ─────────────────────────────────────────
 #
 # Following the NY Fed Staff Nowcast approach (Bok et al., 2018), we use a
@@ -295,10 +300,12 @@ def fit_dfm(
     -------
     DynamicFactorMQResults
         Fitted results object. Key attributes:
-          .fittedvalues           DataFrame of smoothed fitted values
           .factors.smoothed       Time series of smoothed factor estimates
           .llf                    Log-likelihood at convergence
           .summary()              Full parameter table
+          .get_prediction(...)    Original-scale predictions; use via
+                                  extract_nowcast(), not .fittedvalues (which
+                                  is one-step-ahead and in standardized units)
     """
     factors_arg = factor_blocks if factor_blocks is not None else n_factors
 
@@ -324,6 +331,40 @@ def fit_dfm(
     return results
 
 
+def quarter_end_month(results: Any, quarter_start: pd.Timestamp | pd.Period) -> Any:
+    """
+    Return the label in the model's monthly index where the quarter's GDP lives.
+
+    DynamicFactorMQ places each quarterly observation at the LAST month of its
+    quarter (Q4 2019 → December 2019); the values it implies at the first and
+    second months are rolling Mariano–Murasawa windows that straddle two
+    quarters. quarterly_df dates quarters at their START (2019-10-01), so the
+    quarter-start date must never be used to index the monthly results.
+
+    The returned key matches the model's index type: a monthly Period for a
+    PeriodIndex (what statsmodels builds from 'MS' DataFrames) or the
+    matching Timestamp for a DatetimeIndex. Raises if the month is absent.
+    """
+    qe = pd.Period(quarter_start, freq="Q").asfreq("M", how="end")
+    index = results.model._index
+
+    if isinstance(index, pd.PeriodIndex):
+        key = qe
+    elif isinstance(index, pd.DatetimeIndex):
+        matches = index[(index.year == qe.year) & (index.month == qe.month)]
+        key = matches[0] if len(matches) else None
+    else:
+        raise TypeError(f"Unsupported model index type: {type(index).__name__}")
+
+    if key is None or key not in index:
+        raise ValueError(
+            f"Quarter-end month {qe} is not in the model's index "
+            f"({index[0]} → {index[-1]}). The target quarter must be a row of "
+            "the quarterly_df passed to fit_dfm()."
+        )
+    return key
+
+
 def extract_nowcast(
     results: Any,
     quarterly_df: pd.DataFrame,
@@ -332,17 +373,19 @@ def extract_nowcast(
     Extract the current-quarter GDP growth nowcast from a fitted DFM.
 
     What "nowcast" means here:
-      We look at the last quarter in the panel where actual GDP hasn't been
-      released yet (GDPC1 is NaN). The model's smoothed prediction for that
-      quarter-end month is the nowcast: the model's best estimate of GDP growth
-      given all the monthly indicators released so far.
+      The target is the last quarter in quarterly_df whose GDP is NaN (not yet
+      released). The nowcast is the model's SMOOTHED estimate of GDP growth at
+      that quarter's last month — its best estimate given every monthly
+      indicator in the dataset — converted back to percent growth.
 
-    How the model produces this:
-      The Kalman smoother runs forward through all the monthly data, updating
-      its estimate of the hidden factor as each new indicator arrives. Where
-      GDP is missing (current quarter), the factor estimate is driven entirely
-      by the monthly indicators. The observation equation then translates the
-      factor back into a GDP growth prediction.
+    Why not results.fittedvalues (the pre-2026-10 implementation):
+      fittedvalues is (a) the one-step-ahead prediction, conditioning only on
+      data through the previous month, and (b) in the model's STANDARDIZED
+      units (a z-score), because standardize=True. The old code also looked
+      it up at the quarter-START month, which under the Mariano–Murasawa
+      aggregation is mostly the previous quarter. Together these produced
+      nowcasts that tracked last quarter's GDP and averaged near zero. See
+      tests/test_dfm.py::TestExtractNowcastRealFit.
 
     Parameters
     ----------
@@ -357,62 +400,52 @@ def extract_nowcast(
     dict or None
         None if there is no missing GDP quarter in the panel.
         Otherwise a dict with:
-            'date'             : the quarter-end date of the nowcast (e.g., 2026-06-01)
-            'quarter'          : human-readable label (e.g., "2026 Q2")
-            'nowcast_qtr_pct'  : model's predicted quarterly log-diff (%)
+            'date'             : quarter-START Timestamp of the target (e.g., 2026-07-01)
+            'impact_month'     : model-index key of the quarter-END month (e.g., Period 2026-09)
+            'quarter'          : human-readable label (e.g., "2026 Q3")
+            'nowcast_qtr_pct'  : predicted quarterly log-diff growth (%)
             'nowcast_ann_pct'  : same × 4 (annualized, comparable to GDPNow)
+
+    Raises
+    ------
+    ValueError
+        If GDPC1 is missing, or the target month is not in the model's index.
+        There is deliberately no fallback: a wrong-but-plausible number is
+        worse than an error.
     """
     gdp_col = "GDPC1"
     if gdp_col not in quarterly_df.columns:
         raise ValueError(f"Expected '{gdp_col}' in quarterly_df. Got: {list(quarterly_df.columns)}")
 
     gdp_actual = quarterly_df[gdp_col]
-
-    # quarterly_df now has a proper quarterly DatetimeIndex (freq='QS'), so
-    # every row IS a quarter — no need to filter for quarter-end months.
     missing_actuals = gdp_actual[gdp_actual.isna()]
 
     if missing_actuals.empty:
         logger.warning("No missing GDP quarters found — no nowcast to compute.")
         return None
 
-    # The nowcast target is the LAST quarter with no released actual
-    nowcast_date  = missing_actuals.index[-1]
-    quarter_num   = (nowcast_date.month - 1) // 3 + 1
-    quarter_label = f"{nowcast_date.year} Q{quarter_num}"
+    nowcast_date  = pd.Timestamp(missing_actuals.index[-1])
+    quarter_label = f"{nowcast_date.year} Q{nowcast_date.quarter}"
+    impact_month  = quarter_end_month(results, nowcast_date)
 
-    # fittedvalues contains the model's smoothed predictions for all periods,
-    # including quarters where the actual GDPC1 is NaN (the nowcast).
-    fv = results.fittedvalues
+    # get_prediction (unlike fittedvalues) undoes the model's standardization
+    # (original_scale=True is the DynamicFactorMQ default).
+    pred = results.get_prediction(
+        start=impact_month, end=impact_month, information_set="smoothed",
+    ).predicted_mean
+    if gdp_col not in pred.columns:
+        raise ValueError(f"'{gdp_col}' not in model predictions: {list(pred.columns)}")
 
-    if gdp_col not in fv.columns:
-        raise ValueError(
-            f"'{gdp_col}' not found in fittedvalues. "
-            f"Available columns: {list(fv.columns)}"
-        )
-
-    # fittedvalues may use a different date convention than quarterly_df
-    # (e.g., quarter-end vs quarter-start). Try direct lookup first, then
-    # search within a 3-month window.
-    nowcast_val = fv[gdp_col].get(nowcast_date, float("nan"))
-
-    if pd.isna(nowcast_val):
-        # Fall back: look at the last non-NaN fitted GDP value
-        last_valid = fv[gdp_col].dropna()
-        if last_valid.empty:
-            logger.error("No valid fitted GDP values found in fittedvalues")
-            return None
-        nowcast_val   = last_valid.iloc[-1]
-        nowcast_date  = last_valid.index[-1]
-        quarter_num   = (nowcast_date.month - 1) // 3 + 1
-        quarter_label = f"{nowcast_date.year} Q{quarter_num} (last available)"
-        logger.warning("Nowcast date mismatch; used last fittedvalue at %s", nowcast_date.date())
+    nowcast_val = float(pred[gdp_col].iloc[0])
+    if not np.isfinite(nowcast_val):
+        raise ValueError(f"Non-finite nowcast ({nowcast_val}) for {quarter_label}.")
 
     return {
         "date":            nowcast_date,
+        "impact_month":    impact_month,
         "quarter":         quarter_label,
-        "nowcast_qtr_pct": float(nowcast_val),
-        "nowcast_ann_pct": float(nowcast_val) * 4,
+        "nowcast_qtr_pct": nowcast_val,
+        "nowcast_ann_pct": nowcast_val * 4,
     }
 
 
@@ -441,27 +474,25 @@ def compute_news(
       1.  Fit the model on ALL available data ("after" vintage).
           These parameter estimates are held fixed throughout.
       2.  Apply those fixed parameters to the "before" dataset using the
-          Kalman smoother.  The difference in filtered forecasts (before vs
-          after) gives the revision.
+          Kalman smoother.
       3.  Call statsmodels results.news() to decompose the revision into
           per-series contributions via the Kalman gain.
 
-    Important note on smoother vs filter:
-      - The current-best-estimate nowcast (from extract_nowcast / fittedvalues)
-        uses the Kalman SMOOTHER, which conditions on ALL available data in
-        both directions.
-      - The news decomposition uses the Kalman FILTER (one-sided), which only
-        conditions on data up to the vintage cutoff.  This is conceptually
-        correct for news: "given only past data, how does each new release
-        move the forecast?"
-      These two quantities answer different questions and will differ
-      numerically; both are valid.
+    Smoother, not filter:
+      statsmodels' news() compares SMOOTHED estimates of the target quarter
+      under each information set — the same quantity extract_nowcast()
+      reports. So 'after_nowcast_qtr' equals extract_nowcast() on the after
+      data, and 'before_nowcast_qtr' is that same estimate on the before data
+      with parameters held fixed. (Earlier versions of this docstring said
+      news used the one-sided filter; it never did.)
 
     Look-ahead note:
-      The local FRED cache always contains the latest data revision.  For a
-      true real-time vintage comparison, use ALFRED (Phase 4).  Here we clip
-      by date, but the underlying cache may contain data released after
-      before_end for series whose FRED index date precedes before_end.
+      The local FRED cache always contains the latest data revision.  The
+      before dataset is clipped by observation date, and GDP quarters not yet
+      published on before_end (advance estimate ≈ quarter end + 30 days) are
+      masked. Monthly series are NOT masked by release date, so an observation
+      for the month containing before_end may have been published after it;
+      a fully real-time comparison would build the before set from ALFRED.
 
     Parameters
     ----------
@@ -484,11 +515,11 @@ def compute_news(
     -------
     dict with:
         'target_quarter'     : human-readable label (e.g. "2026 Q2")
-        'target_date'        : Timestamp of the nowcast quarter-start
+        'target_date'        : model-index key of the target quarter's last month
         'before_end'         : the before_end string passed in
-        'before_nowcast_qtr' : filter-based "before" quarterly nowcast (%)
+        'before_nowcast_qtr' : smoothed "before" quarterly nowcast (%)
         'before_nowcast_ann' : same × 4 (annualized %)
-        'after_nowcast_qtr'  : filter-based "after" quarterly nowcast (%)
+        'after_nowcast_qtr'  : smoothed "after" quarterly nowcast (%)
         'after_nowcast_ann'  : same × 4 (annualized %)
         'revision_qtr'       : after − before (quarterly pp)
         'revision_ann'       : same × 4 (annualized pp)
@@ -511,38 +542,53 @@ def compute_news(
     nc_smooth = extract_nowcast(results_after, quarterly_after)
     if nc_smooth is None:
         raise ValueError("No missing GDP quarter found in the 'after' dataset.")
-    impact_date = nc_smooth["date"]
+    # The quarter-END month: where DynamicFactorMQ stores the quarter's GDP.
+    # (Passing the quarter-start date here measured news for the wrong month.)
+    impact_date = nc_smooth["impact_month"]
 
     # --- Build "before" dataset by clipping to before_end ------------------
     before_ts = pd.Timestamp(before_end)
     monthly_before   = monthly_after.loc[monthly_after.index <= before_ts].copy()
     quarterly_before = quarterly_after.loc[quarterly_after.index <= before_ts].copy()
+    # Clipping on the observation date is not enough for GDP: a quarter dated
+    # 2026-04-01 is not PUBLISHED until its advance estimate ~30 days after the
+    # quarter ends. Hide any GDP value not yet released on before_end, so the
+    # release shows up as news instead of leaking into the "before" nowcast.
+    q_end = quarterly_before.index + pd.offsets.QuarterEnd(0)
+    unreleased = q_end + pd.Timedelta(days=GDP_ADVANCE_LAG_DAYS) > before_ts
+    quarterly_before.loc[unreleased, "GDPC1"] = np.nan
     if not quarterly_before.empty:
         quarterly_before.index.freq = pd.tseries.frequencies.to_offset("QS")
 
     # --- Apply "after" params to "before" data (Kalman smooth only) --------
     # Holding parameters fixed ensures the revision is purely from new
-    # observations, not from parameter re-estimation.
-    factors_arg = factor_blocks if factor_blocks is not None else n_factors
-    mod_before = DynamicFactorMQ(
-        endog=monthly_before,
-        endog_quarterly=quarterly_before,
-        factors=factors_arg,
-        factor_orders=1,
-        idiosyncratic_ar1=True,
-        standardize=True,
+    # observations, not from parameter re-estimation. apply() clones the
+    # after-model, which also reuses its standardization means/stds. A freshly
+    # constructed model would standardize with the before-data's own moments,
+    # so every overlapping observation would look "revised" to news() and the
+    # attribution to new releases would be wrong.
+    results_before = results_after.apply(
+        monthly_before, endog_quarterly=quarterly_before,
     )
-    results_before = mod_before.smooth(results_after.params)
 
     # --- Compute news decomposition ----------------------------------------
+    # comparison_type describes the COMPARISON argument: results_before is the
+    # *previous* information set. (It was "updated" until 2026-10, which ran
+    # the decomposition backwards — after → before.)
+    # NB: the keyword is `impact_date` (singular). A misspelled `impact_dates`
+    # is silently absorbed by **kwargs and news() falls back to the last
+    # month of the previous sample — right only by coincidence.
     news_obj = results_after.news(
         comparison=results_before,
-        impact_dates=impact_date,
+        impact_date=impact_date,
         impacted_variable="GDPC1",
-        comparison_type="updated",
+        comparison_type="previous",
     )
+    reported = news_obj.impacts.index.get_level_values("impact date")
+    if len(reported) and reported[0] != impact_date:
+        raise ValueError(f"news() measured impacts at {reported[0]}, not {impact_date}.")
 
-    # Filter-based "before" and "after" forecasts for the target quarter
+    # Smoothed "before" and "after" estimates for the target quarter
     prev_series = news_obj.prev_impacted_forecasts.get("GDPC1", pd.Series(dtype=float))
     post_series = news_obj.post_impacted_forecasts.get("GDPC1", pd.Series(dtype=float))
 

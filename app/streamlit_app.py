@@ -573,7 +573,7 @@ def _render_news_result(tidy: pd.DataFrame, meta: dict, subtitle: str) -> None:
     c1.markdown(
         th.stat_card(f"Nowcast as of {meta['before_end']}",
                      f"{meta['before_nowcast_ann']:+.2f}%",
-                     "annualized, Kalman filter", accent=th.SLATE),
+                     "annualized, Kalman smoother", accent=th.SLATE),
         unsafe_allow_html=True,
     )
     c2.markdown(
@@ -585,7 +585,7 @@ def _render_news_result(tidy: pd.DataFrame, meta: dict, subtitle: str) -> None:
     c3.markdown(
         th.stat_card(f"Nowcast as of {meta['computed_on']}",
                      f"{meta['after_nowcast_ann']:+.2f}%",
-                     "annualized, Kalman filter", accent=th.NAVY),
+                     "annualized, Kalman smoother", accent=th.NAVY),
         unsafe_allow_html=True,
     )
 
@@ -1001,9 +1001,12 @@ with tab3:
                 )
 
     st.caption(
-        "Technical note: news impacts use the one-sided Kalman filter (conditioning "
-        "only on past data), while the Live Nowcast tab uses the smoother (all data). "
-        "The two differ numerically — both are correct; they answer different questions."
+        "Technical note: both nowcasts are Kalman-smoother estimates of the target "
+        "quarter's GDP, with model parameters held fixed, so the 'after' nowcast of a "
+        "window ending today equals the Live Nowcast. GDP releases are dated by "
+        "their advance-estimate timing; monthly series are clipped by observation "
+        "date, so a value for the month containing the cutoff may have been "
+        "published shortly after it."
     )
 
 

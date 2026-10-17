@@ -132,83 +132,136 @@ class TestPrepareDFMData:
 
 # ── Unit tests: extract_nowcast ────────────────────────────────────────────────
 
-class TestExtractNowcast:
+def _synthetic_nowcast_problem(seed: int = 3):
     """
-    Test the nowcast extraction logic with a mock results object.
-    We stub out results.fittedvalues so we don't need to run the Kalman filter.
+    A small mixed-frequency dataset with a KNOWN answer, built so that the
+    three historical extraction mistakes each give a visibly wrong number.
+
+      * Latent monthly factor f_t (AR(1)), forced to −2.5 in Jul–Sep 2019 and
+        +2.5 in Oct–Dec 2019, so Q3 2019 is weak and Q4 2019 (the target) is
+        strong. Reading a cell dominated by Q3 shows up as a big miss.
+      * Quarterly GDP = 2.0 + MM(f) in percent, where MM is the Mariano–
+        Murasawa 1-2-3-2-1 aggregation ending at the quarter's LAST month.
+        Mean 2.0 means a z-score (≈ 0) is far from the right answer.
+      * Four monthly indicators load on f. Q4 2019 GDP is masked (NaN).
+
+    Returns (monthly_df, quarterly_df, truth_q4, truth_q3).
+    """
+    rng = np.random.default_rng(seed)
+    midx = pd.date_range("2005-01-01", "2019-12-01", freq="MS")
+    f = np.zeros(len(midx))
+    for t in range(1, len(f)):
+        f[t] = 0.7 * f[t - 1] + rng.normal()
+    f[-6:-3], f[-3:] = -2.5, 2.5
+
+    loadings = [1.0, 0.8, -0.6, 0.9]
+    monthly = pd.DataFrame(
+        {f"M{i}": lam * f + 0.3 * rng.normal(size=len(f)) for i, lam in enumerate(loadings)},
+        index=midx,
+    )
+
+    w = np.array([1, 2, 3, 2, 1]) / 9.0
+    mm = pd.Series(np.convolve(f, w, mode="full")[: len(f)], index=midx)
+    q_end_months = midx[midx.month % 3 == 0]
+    gdp = 2.0 + mm.loc[q_end_months] + 0.05 * rng.normal(size=len(q_end_months))
+    gdp.index = q_end_months - pd.DateOffset(months=2)        # quarter-START dates
+    quarterly = pd.DataFrame({"GDPC1": gdp.iloc[1:]}).asfreq("QS")
+    truth_q4, truth_q3 = float(quarterly["GDPC1"].iloc[-1]), float(quarterly["GDPC1"].iloc[-2])
+    quarterly.iloc[-1, 0] = np.nan
+    return monthly, quarterly, truth_q4, truth_q3
+
+
+@pytest.fixture(scope="module")
+def synthetic_fit():
+    """Fit a real 1-factor DynamicFactorMQ once for all extraction tests (~2 s)."""
+    import warnings
+    from src.model.dfm import fit_dfm
+
+    monthly, quarterly, truth_q4, truth_q3 = _synthetic_nowcast_problem()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")            # EM maxiter warning is fine here
+        results = fit_dfm(monthly, quarterly, n_factors=1, maxiter=200)
+    return results, monthly, quarterly, truth_q4, truth_q3
+
+
+class TestExtractNowcastRealFit:
+    """
+    Regression tests for the 2026-10 alignment bug, using a REAL fitted model.
+
+    The old tests mocked `fittedvalues` on a quarterly index, which hid three
+    problems: statsmodels' fittedvalues are monthly-indexed, in standardized
+    units (z-scores), and one-step-ahead; and the quarter-start month holds a
+    rolling window that is mostly the previous quarter.
     """
 
-    class _MockResults:
-        """Minimal stand-in for DynamicFactorMQResults."""
-        def __init__(self, fv: pd.DataFrame):
-            self.fittedvalues = fv
+    def test_impact_month_is_quarter_end(self, synthetic_fit):
+        """The target month is December 2019 (quarter end), not October."""
+        results, _, quarterly, *_ = synthetic_fit
+        out = extract_nowcast(results, quarterly)
+        assert out["quarter"] == "2019 Q4"
+        assert out["date"] == pd.Timestamp("2019-10-01")
+        assert out["impact_month"] == pd.Period("2019-12", freq="M")
 
-    def _make_quarterly_df(self, n_quarters=8, n_missing=2):
-        """Build a quarterly DataFrame (freq='QS') with the last n_missing as NaN."""
-        idx = pd.date_range("2020-01-01", periods=n_quarters, freq="QS")
-        values = [0.5] * (n_quarters - n_missing) + [float("nan")] * n_missing
-        s = pd.Series(values, index=idx, name="GDPC1")
-        return pd.DataFrame({"GDPC1": s})
+    def test_value_is_smoothed_prediction_at_quarter_end(self, synthetic_fit):
+        """The nowcast is the original-scale smoothed estimate at Dec 2019."""
+        results, _, quarterly, *_ = synthetic_fit
+        out = extract_nowcast(results, quarterly)
+        expected = results.get_prediction(
+            start="2019-12", end="2019-12", information_set="smoothed",
+        ).predicted_mean["GDPC1"].iloc[0]
+        assert out["nowcast_qtr_pct"] == pytest.approx(float(expected), abs=1e-12)
 
-    def test_returns_last_missing_quarter(self):
+    def test_tracks_current_quarter_in_percent_units(self, synthetic_fit):
         """
-        extract_nowcast should report the LAST quarter where GDP is NaN.
-        If Q3 2021 and Q4 2021 are both missing, the nowcast should be for Q4 2021.
+        The nowcast must be close to the TRUE Q4 value (strong quarter, ~2.8%)
+        — not to Q3 (weak), and not a z-score near zero.
         """
-        quarterly_df = self._make_quarterly_df(n_quarters=8, n_missing=2)
+        results, _, quarterly, truth_q4, truth_q3 = synthetic_fit
+        nowcast = extract_nowcast(results, quarterly)["nowcast_qtr_pct"]
+        assert abs(nowcast - truth_q4) < 0.5, f"nowcast {nowcast:.2f} vs truth {truth_q4:.2f}"
+        assert abs(nowcast - truth_q4) < abs(nowcast - truth_q3)
 
-        idx = quarterly_df.index
-        fv_vals = pd.Series(0.42, index=idx, name="GDPC1")
-        mock_results = self._MockResults(pd.DataFrame({"GDPC1": fv_vals}))
+    def test_old_extraction_would_fail_this_problem(self, synthetic_fit):
+        """
+        Guard on the test design itself: the pre-fix reading (fittedvalues at
+        the quarter-START month) must be far from the truth here, or the test
+        above would not be able to catch a regression.
+        """
+        results, _, quarterly, truth_q4, _ = synthetic_fit
+        old = float(results.fittedvalues["GDPC1"].loc[pd.Period("2019-10", freq="M")])
+        assert abs(old - truth_q4) > 1.5, f"old reading {old:.2f} is too close to {truth_q4:.2f}"
 
-        out = extract_nowcast(mock_results, quarterly_df)
+    def test_annualized_is_4x_quarterly(self, synthetic_fit):
+        results, _, quarterly, *_ = synthetic_fit
+        out = extract_nowcast(results, quarterly)
+        assert out["nowcast_ann_pct"] == pytest.approx(4 * out["nowcast_qtr_pct"], abs=1e-12)
 
-        assert out is not None
-        assert out["date"] == idx[-1], (
-            f"Expected nowcast at last index entry {idx[-1].date()}, "
-            f"got {out['date'].date()}"
-        )
+    def test_raises_when_target_month_outside_model(self, synthetic_fit):
+        """No silent fallback: a target the model never saw is an error."""
+        results, _, quarterly, *_ = synthetic_fit
+        extra = pd.DataFrame({"GDPC1": [np.nan]}, index=pd.DatetimeIndex(["2020-01-01"]))
+        wrong = pd.concat([quarterly, extra]).asfreq("QS")
+        with pytest.raises(ValueError, match="not in the model's index"):
+            extract_nowcast(results, wrong)
 
-    def test_annualized_is_4x_quarterly(self):
-        """nowcast_ann_pct must equal nowcast_qtr_pct × 4."""
-        quarterly_df = self._make_quarterly_df()
-        idx = quarterly_df.index
-        fv = pd.DataFrame({"GDPC1": pd.Series(0.55, index=idx)})
-        mock_results = self._MockResults(fv)
 
-        out = extract_nowcast(mock_results, quarterly_df)
-        assert abs(out["nowcast_ann_pct"] - 4 * out["nowcast_qtr_pct"]) < 1e-12
+class TestExtractNowcastNoFit:
 
     def test_returns_none_when_no_missing(self):
         """If all GDP quarters have actual data, there is nothing to nowcast."""
         idx = pd.date_range("2020-01-01", periods=8, freq="QS")
-        s = pd.Series(0.5, index=idx, name="GDPC1")   # All quarters have actuals
-        quarterly_df = pd.DataFrame({"GDPC1": s})
+        quarterly_df = pd.DataFrame({"GDPC1": pd.Series(0.5, index=idx)})
+        assert extract_nowcast(object(), quarterly_df) is None
 
-        fv = pd.DataFrame({"GDPC1": pd.Series(0.5, index=idx)})
-        mock_results = self._MockResults(fv)
+    def test_quarter_end_month_handles_datetime_index(self):
+        """quarter_end_month() returns the matching key for a DatetimeIndex model."""
+        from types import SimpleNamespace
+        from src.model.dfm import quarter_end_month
 
-        result = extract_nowcast(mock_results, quarterly_df)
-        assert result is None
-
-    def test_nowcast_value_matches_fittedvalues(self):
-        """
-        The reported nowcast_qtr_pct must equal the fittedvalues entry
-        at the nowcast date. This verifies we're reading the right cell.
-        """
-        quarterly_df = self._make_quarterly_df(n_quarters=8, n_missing=1)
-        idx = quarterly_df.index
-
-        fv_series = pd.Series(0.0, index=idx)
-        fv_series.iloc[-1] = 0.1234        # distinctive value at the nowcast quarter
-
-        mock_results = self._MockResults(pd.DataFrame({"GDPC1": fv_series}))
-        out = extract_nowcast(mock_results, quarterly_df)
-
-        assert abs(out["nowcast_qtr_pct"] - 0.1234) < 1e-10, (
-            f"Reported nowcast {out['nowcast_qtr_pct']:.6f} ≠ "
-            f"fittedvalues entry 0.1234 at {idx[-1].date()}"
-        )
+        idx = pd.date_range("2019-01-01", "2019-12-01", freq="MS")
+        fake = SimpleNamespace(model=SimpleNamespace(_index=idx))
+        assert quarter_end_month(fake, pd.Timestamp("2019-10-01")) == pd.Timestamp("2019-12-01")
+        assert quarter_end_month(fake, pd.Timestamp("2019-01-01")) == pd.Timestamp("2019-03-01")
 
 
 # ── Integration tests (require FRED API + model fit) ─────────────────────────
@@ -247,6 +300,22 @@ class TestDFMIntegration:
         factors = results.factors.smoothed
         assert factors.shape[0] == len(monthly_df), \
             f"Factor array has {factors.shape[0]} rows, expected {len(monthly_df)}"
+
+    def test_real_vintage_nowcast_2019q4(self):
+        """
+        Real ALFRED vintage as of 2019-12-31, blocked 2-factor model. Q4 2019
+        GDP was first published at +2.1% annualized. The pre-fix extraction
+        reported −0.35 here (a z-score ×4 from the October cell); a correct
+        nowcast for a calm quarter should land in a normal growth range.
+        """
+        from src.backtest.vintage import build_vintage_dfm_data
+        from src.model.dfm import fit_dfm, make_block_structure
+
+        m, q = build_vintage_dfm_data(as_of_date="2019-12-31", start="2000-01-01")
+        res = fit_dfm(m, q, factor_blocks=make_block_structure(m, q), maxiter=500)
+        out = extract_nowcast(res, q)
+        assert out["quarter"] == "2019 Q4"
+        assert 0.5 < out["nowcast_ann_pct"] < 4.5, out
 
     def test_nowcast_in_plausible_range(self):
         """
