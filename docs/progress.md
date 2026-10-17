@@ -270,6 +270,20 @@ a step.
       stated the old conclusions now generated from data/evaluation_*.csv.
 - [x] CI (GitHub Actions, non-integration tests), LICENSE (MIT), CONTRIBUTING.md.
 
+## Phase 8 — Accuracy through the quarter + uncertainty (pre-registered 2026-10-17)
+
+Design fixed BEFORE any results were computed (commit this entry first):
+- Grid: every target quarter 2015Q1–2025Q4; nowcast every 14 days from the quarter's
+  first day up to the day before its first GDP release (ALFRED first-release date).
+- Models: 2-factor DFM (dashboard model), 1-factor DFM, robust AR(1), expanding mean,
+  GDPNow (ALFRED vintage on the same date, where it exists). Same specs as Phase 7.
+- Targets/samples: first-release and current-vintage GDP; ex-2020 and full sample.
+- Reporting: RMSE by days-until-release bucket (>60, 31–60, 1–30 days); DM tests per bucket.
+- Uncertainty: Kalman-smoother standard error → 68% / 90% Gaussian intervals; report
+  coverage, PIT histogram, CRPS. These bands ignore parameter uncertainty; expect
+  under-coverage, report it either way.
+- No model changes in response to these results.
+
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3
 factors due to slow EM convergence with 5.")
