@@ -201,7 +201,7 @@ a step.
       when the key is missing; startup build stamp in logs (344e84a, 05e7156)
 - [x] Target-quarter gap fix: nowcast target is "last released quarter + 1", reindexed
       on a gap-free QS grid (7cc6d96) — crashed on quarter-boundary days before
-- [x] Deployed to Streamlit Community Cloud (URL not yet recorded in README)
+- [x] Deployed to Streamlit Community Cloud: https://gdpnowcaster-xpcr3k8uwqbdjtgm9imdee.streamlit.app/
 
 ## Phase 6.5 — Chart-scale fix + visual restraint pass (2026-07-01)
 - [x] **Focused/Full scale toggles** on all time-series charts (`th.focused_yaxis`).
