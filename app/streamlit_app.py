@@ -188,8 +188,9 @@ def _build_horizon_fig(hz: pd.DataFrame) -> go.Figure:
         r = sub.groupby("bin", observed=False).apply(
             lambda g: float(np.sqrt(((g[col] - g["first_release_ann"]) ** 2).mean()))
             if g[col].notna().sum() >= 10 else np.nan)
+        keep = r.notna().to_numpy()            # empty bins would still stretch the x-axis
         fig.add_trace(go.Scatter(
-            x=centers, y=r.values, name=name, mode="lines+markers",
+            x=centers[keep], y=r.values[keep], name=name, mode="lines+markers",
             line=dict(color=color, width=width), marker=dict(size=6),
             hovertemplate=f"{name}: %{{y:.2f}} pp<extra>%{{x:.0f}} days before release</extra>",
         ))
@@ -673,7 +674,9 @@ def _band_text(nowcast: dict) -> str:
         r = cal[(cal.model == "DFM 2-factor") & (cal.target == "first release")
                 & (cal["sample"] == "ex-2020") & (cal.horizon == "all horizons")]
         if len(r):
-            text += f" · such bands held {r['coverage_68'].iloc[0]:.0%} of the time historically"
+            cov = float(r["coverage_68"].iloc[0])
+            lean = "they run wide" if cov > 0.73 else "they run narrow" if cov < 0.63 else "about right"
+            text += f" · in the backtest such bands contained the outcome {cov:.0%} of the time ({lean})"
     return text
 
 

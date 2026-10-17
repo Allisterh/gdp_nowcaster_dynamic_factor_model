@@ -15,7 +15,7 @@ Atlanta Fed's GDPNow and three simple real-time baselines.
 > one-step-ahead prediction rather than the smoother. The old headline
 > (RMSE 2.87 pp ex-2020, a "−2 pp vintage bias", "AR(1) wins in calm times")
 > is withdrawn. All numbers below come from the corrected code; the old and
-> new figures are compared side by side in §3.3.
+> new figures are compared side by side in §3.5.
 
 ---
 
@@ -45,6 +45,15 @@ direction of the collapse and rebound; with four such quarters that advantage
 is large (13.7 vs 22.8–36.3 pp RMSE) but not statistically significant. The
 Atlanta Fed's GDPNow, built on far more source data, is clearly more accurate
 (0.98 vs 1.77 pp against first-release GDP, p = 0.01).
+
+Re-running the evaluation **every two weeks through each quarter** (448
+nowcasts, each from that day's archived data) shows where the gap comes from:
+the DFM's error falls from 1.94 to 1.71 pp by mid-quarter and then plateaus,
+while GDPNow keeps improving to 1.02 pp as hard data for the quarter's final
+month arrives. The model's uncertainty bands turn out to be the most
+informative result: its 68% bands contain the outcome 82% of the time overall,
+but **91% in 2015–19, 73% in 2021–25 and 8% in 2020** — a constant-variance
+model is too cautious in calm years and badly overconfident in a crisis.
 
 ---
 
@@ -221,6 +230,14 @@ surveys) — payrolls, industrial production and retail sales for the third mont
 come out the following month. A quarter-end nowcast is therefore built mostly
 from two months of hard data.
 
+**Rebuilding vintages efficiently.** The through-the-quarter evaluation needs
+about 5,000 (series, date) vintages, and each direct ALFRED request takes ~2 s
+under a rate limit. Instead, each series' complete revision history is fetched
+once and the vintage on any date is rebuilt locally — the latest value
+published on or before it, keeping values ALFRED records as explicitly missing
+(e.g., data skipped during the 2025 shutdown). Checked against all 1,036
+vintages previously fetched directly: identical. 13 requests instead of ~5,000.
+
 **Two scoring targets.** Nowcasts are scored against both (a) today's revised
 GDP ("current vintage") and (b) GDP growth as first published — usually the
 advance estimate, ~30 days after the quarter; built from ALFRED using the
@@ -232,12 +249,85 @@ average (ex-2020), which shifts every model's measured bias by the same amount.
 
 ## 3. Results
 
+### 3.1 Accuracy as data arrives (through-the-quarter evaluation)
+
+A nowcast is updated continuously, so the standard way to judge one is how its
+accuracy improves as the quarter's data comes in. Each of the 44 quarters was
+nowcast every 14 days from its first day — plus on its last day — up to the day
+before its GDP was first published: **448 nowcasts**, each from the ALFRED
+vintage of that day (no look-ahead: every date precedes the release, and the
+quarter-end rows reproduce the §3.3 backtest exactly). The design was written
+into `docs/progress.md` before any results were computed.
+
+![Accuracy as data arrives](docs/figures/horizon_rmse.png)
+
+RMSE excluding 2020, scored against GDP as first published (annualized pp):
+
+| Days before GDP release | > 60 | 31–60 | 1–30 |
+|---|---:|---:|---:|
+| **DFM 2-factor (this model)** | **1.94** | **1.71** | **1.76** |
+| DFM 1-factor | 1.99 | 1.79 | 1.84 |
+| Robust AR(1) | 1.71 | 1.63 | 1.71 |
+| Expanding mean | 1.79 | 1.69 | 1.77 |
+| AR(1) | 1.81 | 1.79 | 1.88 |
+| GDPNow | 1.47 | 1.17 | 1.02 |
+| *DM p, DFM vs robust AR(1)* | *0.24* | *0.82* | *0.83* |
+| *DM p, DFM vs GDPNow* | *0.08* | *0.05* | *0.02* |
+
+Diebold–Mariano tests average each quarter's losses first, because several
+nowcasts of the same quarter fall in each window and are not independent.
+Full grid (both targets, both samples): `data/horizon_accuracy.csv`,
+`data/horizon_tests.csv`.
+
+**What it shows.** The DFM gains most of its accuracy by mid-quarter (early in
+the quarter it must forecast two quarters ahead, since the previous quarter's
+GDP isn't out yet) and then stops improving — consistent with §3.4: the hard
+data for the quarter's last month adds little to this model. GDPNow's error
+keeps falling, to 1.02 pp, and its advantage is significant in the last two
+windows. At no horizon does the DFM significantly beat the simple baselines.
+
+### 3.2 Are the uncertainty bands honest?
+
+Each nowcast comes with a standard error from the Kalman smoother, giving 68%
+and 90% bands (these ignore uncertainty in the estimated parameters). A
+calibrated 68% band contains the outcome about 68% of the time.
+
+| Excluding 2020, first-release target | 68% band contained outcome | 90% band | Typical band (±pp) | CRPS |
+|---|---:|---:|---:|---:|
+| > 60 days before release | 85% | 98% | 2.56 | 1.04 |
+| 31–60 days | 80% | 94% | 1.83 | 0.90 |
+| 1–30 days | 79% | 93% | 1.72 | 0.92 |
+| **All horizons** | **82%** | **96%** | 2.16 | 0.98 |
+
+The pre-registered expectation was that the bands would be *too narrow*; they
+are too *wide* overall. A follow-up split by period (post-hoc — chosen after
+seeing the results, `data/calibration_by_period.csv`) explains why:
+
+| Period | Typical band (±pp) | Actual RMSE | 68% band held | 90% band held |
+|---|---:|---:|---:|---:|
+| 2015–2019 | 1.52 | 0.95 | 91% | 100% |
+| 2020 | 2.04 | 15.41 | 8% | 10% |
+| 2021–2025 | 2.78 | 2.41 | 73% | 92% |
+
+The model assumes one fixed level of noise, estimated from its whole sample.
+Before 2020 that sample includes the 2008 recession, so calm-period bands are
+too wide; in 2020 the bands could not widen for an unprecedented shock; after
+2020, with COVID in the sample, they roughly double and become about right.
+This is the standard argument for adding **stochastic volatility** to
+nowcasting models — a natural next step for this project.
+
+![Nowcast path, most recent quarter](docs/figures/fan_chart_example.png)
+
+*Example: how the 2025 Q4 nowcast evolved (chosen by rule: the most recent
+quarter, not the best-looking one). The flat stretch in October–November is the
+2025 government shutdown, when no new monthly data was published.*
+
 Out-of-sample evaluation covers **44 quarters, 2015 Q1 – 2025 Q4**, each nowcast
 made from that quarter's end-of-quarter ALFRED vintage. Results are reported
 both with and without the four 2020 COVID quarters — leaving the catastrophic
 quarters in is part of the point, not something to cherry-pick around.
 
-### 3.1 Real-time accuracy vs. benchmarks
+### 3.3 Quarter-end accuracy vs. benchmarks
 
 All benchmarks use only the GDP data published by each evaluation date:
 **AR(1)** (OLS, the original baseline), **Robust AR(1)** (Huber regression, so
@@ -310,7 +400,7 @@ Full grid (both targets, both DFM specs): `data/evaluation_tests.csv`.
    two-factor model because it was the design chosen before the backtest;
    switching on the basis of these results would be selecting on the test set.
 
-### 3.2 Two diagnostics
+### 3.4 Two diagnostics
 
 **How much is just timing?** `scripts/diagnose_information_timing.py`
 re-estimates each quarter from the *next* quarter-end vintage, when all three
@@ -327,7 +417,7 @@ so part of each nowcast is carried-over GDP dynamics rather than new monthly
 information. This is a specification question, left for future work rather
 than tuned against the backtest.
 
-### 3.3 Before and after the October 2026 fix
+### 3.5 Before and after the October 2026 fix
 
 2-factor model, current-vintage target. The middle column scores the old
 nowcasts against today's GDP to separate the fix from GDP revisions since June.
@@ -355,7 +445,7 @@ differently. All are fixed and covered by regression tests that fail on the old
 code (`tests/test_dfm.py::TestExtractNowcastRealFit`,
 `tests/test_news.py::TestNewsIntegration`).
 
-### 3.4 Charts
+### 3.6 Charts
 
 The Streamlit dashboard renders these interactively; static versions live in
 [`docs/figures/`](docs/figures/).
@@ -413,6 +503,8 @@ python scripts/run_phase4_backtest.py           # 1-factor → data/backtest_res
 python scripts/run_phase4_backtest_2factor.py   # 2-factor → data/backtest_results_2factor.csv
 python scripts/evaluate_backtest.py             # scorecard → data/evaluation_*.csv
 python scripts/precompute_news_example.py       # dashboard's worked news example
+python scripts/run_horizon_backtest.py          # 448 through-the-quarter nowcasts (~15 min)
+python scripts/evaluate_horizon.py              # horizon accuracy, calibration, figures
 ```
 
 The first run downloads ~530 ALFRED vintage files (rate-limited, with
@@ -438,17 +530,20 @@ scripts/     backtests, evaluation, diagnostics, data prep, screenshots
 
 ## 5. Limitations
 
+- **Uncertainty bands don't adapt.** They are too wide in calm periods and far
+  too narrow in 2020 (§3.2); the model has a single, constant noise level.
+- **Accuracy plateaus by mid-quarter**, while GDPNow keeps improving (§3.1).
 - **No demonstrated edge in normal times.** Ex-2020 the DFM is statistically
-  indistinguishable from a robust AR(1) or the historical mean (§3.1), and
+  indistinguishable from a robust AR(1) or the historical mean (§3.3), and
   GDPNow is significantly better.
 - **2020 is both its best and worst period.** The worst miss is 2020 Q2 (nowcast
   −8.8% vs. actual −32.8%, a 24 pp error), yet it was the only model here to get
   the direction of 2020 right. Four quarters cannot establish a reliable edge.
-- **Quarter-end information set.** At the evaluation date only 2 of 11 series
-  are published for the quarter's third month, and the nowcast leans on the
-  previous quarter's data (§3.2). Nowcasts made later — after month-3 data but
-  before the GDP release — would be more accurate; this design doesn't
-  evaluate them.
+- **The third month adds little.** At quarter-end only 2 of 11 series have
+  third-month data, and the nowcast leans on the previous quarter's data
+  (§3.4). Nowcasts made after the quarter ends, once that data is published,
+  are no more accurate for this model (§3.1) — unlike GDPNow, which builds GDP
+  up from its components and keeps improving.
 - **FRED-only data excludes licensed series.** The ISM/PMI surveys, among the
   most informative monthly indicators, are not on FRED (removed 2014). Regional
   Fed surveys substitute but are noisier. The panel is 11 monthly series;
