@@ -10,7 +10,7 @@ a step.
 - [x] requirements.txt created and installed into .venv
 - [x] .env created (FRED_API_KEY) and confirmed gitignored
 - [x] Git repo initialized, first commit made
-- [ ] Pushed to GitHub (private repo)
+- [x] Pushed to GitHub — public: https://github.com/jrussellgoodman/gdp_nowcaster (2026-07-01)
 
 ## Phase 1 — Data Pipeline
 - [x] src/data/fred_loader.py written (downloads + caches FRED series)
@@ -23,14 +23,24 @@ a step.
 - [x] AR(1) baseline model on GDPC1 growth
 - [x] Single-factor DynamicFactorMQ model fits and converges (EM)
 - [x] Produces a current-quarter GDP nowcast number
-- [ ] Sanity-checked against latest GDPNOW value
+- [x] Compared against GDPNow — backtest scorecard over 39 quarters (Phase 7); live 2026 Q3
+      on 2026-10-17: DFM +2.54% vs GDPNow +3.64%
 
 ## Phase 2 Results (2026-06-10)
+> **Superseded 2026-10-17.** These numbers were produced by the nowcast-extraction bug
+> fixed in Phase 7 (wrong month, z-score units, one-step-ahead prediction).
+> Kept for the record; see Phase 7 for corrected results.
+
 - AR(1): β = −0.13 (mild mean-reversion), long-run mean = 2.44%/yr, R² = 1.8%
 - DFM Q2 2026 nowcast: −0.33% annualized (vs AR(1) +2.55%)
 - Compare at: https://www.atlantafed.org/cprcd/macroeconomic-research/gdpnow
 
 ## Phase 3 Results (2026-06-10)
+> **Superseded 2026-10-17.** These numbers were produced by the nowcast-extraction bug
+> fixed in Phase 7 (wrong month, z-score units, one-step-ahead prediction).
+> The in-sample LLF and loadings
+> are unaffected; the nowcast and news numbers are not. Kept for the record; see Phase 7 for corrected results.
+
 - Blocked DFM: global factor (all 12 series) + real factor (9 real-activity series)
 - LLF: −3510 vs 1-factor −3682 (2-factor global −3566); +172 pp improvement
 - Q2 2026 nowcast (smoother, blocked model): −0.19% annualized
@@ -60,9 +70,13 @@ a step.
 - [x] Full 1-factor backtest run — 44/44 quarters — results in data/backtest_results.csv
 - [x] Full 2-factor blocked backtest run — 44/44 quarters — data/backtest_results_2factor.csv
 - [x] Plots saved to docs/figures/phase4_backtest.png and phase4_backtest_2factor.png
-- [ ] GDPNow comparison added to README (defer to Phase 6)
+- [x] GDPNow comparison added to README (Phase 7, §3.1)
 
 ## Phase 4 Results (2026-06-11)
+> **Superseded 2026-10-17.** These numbers were produced by the nowcast-extraction bug
+> fixed in Phase 7 (wrong month, z-score units, one-step-ahead prediction).
+> Kept for the record; see Phase 7 for corrected results.
+
 
 ### Setup
 - Sample: Q1 2015 – Q4 2025, 44 quarters, ALFRED end-of-quarter evaluation
@@ -83,7 +97,6 @@ a step.
 ★ Primary metric for README and resume bullets. Use 2-factor (2.87 pp) as headline.
 
 ### Key findings
-i d
 1. **2-factor is marginally better on every RMSE measure** (0.05 pp ex-2020, 1.60 pp on 2020 only).
    The improvement from +172 LLF points (Phase 3) → only 0.05 pp RMSE gain is typical:
    better in-sample fit ≠ better out-of-sample forecast accuracy.
@@ -167,6 +180,8 @@ i d
 - **Latent news-chart bug found and fixed:** statsmodels names the impacts index level
   `"updated variable"` (space); the old app checked for `"updated_variable"` and
   silently fell back to a raw dataframe — the per-series bar chart had never rendered.
+- (Phase 7 note: the ~1.6e-5 residual below came from the 'before' model standardizing
+  with its own moments, which made unchanged data look revised; now zero.)
 - Per-series news impacts sum to the **"impact of news"** component, NOT the full
   revision (which also includes revisions to previously-published observations,
   ~1.6e-5 quarterly for the Apr 30 window). `precompute_news_example.py` asserts
@@ -175,6 +190,18 @@ i d
   Period; convert with `.to_timestamp()` before plotting.
 - GDPNow comparison caveat for README: GDPNow targets the advance estimate, our
   backtest actuals are current-vintage — GDPNow's measured accuracy is flattered.
+
+## Phase 6 — Visual redesign v2 + deployment (2026-06-11 → 2026-07-01)
+- [x] Redesign v2: dark navy page header, pill tab navigation, dark hero nowcast card,
+      KPI cards with accent bands, section headers; tokens in app/styles.css,
+      documented in docs/design_system.md (commit dafc695)
+- [x] Deploy readiness: precomputed CSVs shipped (data/ whitelist in .gitignore),
+      requirements.txt pinned, .python-version = 3.13 (a245c36)
+- [x] Streamlit Cloud fixes: FRED_API_KEY bridged from st.secrets; preflight banner
+      when the key is missing; startup build stamp in logs (344e84a, 05e7156)
+- [x] Target-quarter gap fix: nowcast target is "last released quarter + 1", reindexed
+      on a gap-free QS grid (7cc6d96) — crashed on quarter-boundary days before
+- [x] Deployed to Streamlit Community Cloud (URL not yet recorded in README)
 
 ## Phase 6.5 — Chart-scale fix + visual restraint pass (2026-07-01)
 - [x] **Focused/Full scale toggles** on all time-series charts (`th.focused_yaxis`).
@@ -194,6 +221,62 @@ i d
 - [x] scripts/screenshot_tabs.py added (playwright full-page captures per tab);
       docs/figures/after_redesign_tab1–4.png regenerated with the new design.
 
+## Phase 7 — Nowcast-alignment fix + evaluation rigor (2026-10-17)
+
+### What was wrong
+- `extract_nowcast()` read `results.fittedvalues["GDPC1"]` at the quarter-START month.
+  Three problems: (1) DynamicFactorMQ stores quarterly GDP at the quarter's LAST month;
+  the first month is a Mariano–Murasawa window centred on the previous quarter;
+  (2) `fittedvalues` is in standardized units (z-score), so "×4 annualized" averaged ≈ 0;
+  (3) it is the one-step-ahead prediction, not the smoother. Symptoms: corr(nowcast,
+  actual) 0.15 but corr(nowcast, last quarter's actual) 0.85; a "−2 pp bias" that the
+  README attributed to the 2023 BEA revision; on 2026-06-11 the hero card said −0.19%
+  for 2026 Q2 while the News tab's "after" nowcast for the same quarter said +2.72%.
+- `compute_news()`: `comparison_type="updated"` ran the decomposition backwards;
+  `impact_dates=` (misspelled; statsmodels wants `impact_date`) was silently ignored,
+  so impacts were measured at the end of the before-sample; the before model
+  standardized with its own moments. GDP quarters not yet published on `before_end`
+  are now masked (advance estimate ≈ quarter end + 30 days).
+- Old tests mocked `fittedvalues` on a quarterly index, which hid all of this. New
+  tests fit a real model on synthetic data designed so the old readings fail
+  (verified: 4/6 fail on the old code) + integration checks on a real vintage.
+
+### Corrected results (2-factor, 44 quarters, annualized pp)
+| | Old | New |
+|---|---:|---:|
+| RMSE ex-2020 / full / 2020 | 2.87 / 7.71 / 23.89 | 1.73 / 4.44 / 13.67 |
+| Bias full / ex-2020 | −2.09 / −2.06 | +0.23 / −0.35 |
+| corr(nowcast, actual) full / ex-2020 | 0.15 / 0.07 | 0.87 / 0.29 |
+| corr(nowcast, actual t−1) full / ex-2020 | 0.85 / 0.54 | −0.31 / 0.53 |
+
+1-factor: 2.92 → 1.75 ex-2020, 8.18 → 2.96 full, 25.49 → 8.10 in 2020.
+
+### Evaluation rigor (scripts/evaluate_backtest.py → data/evaluation_*.csv)
+- [x] Second scoring target: GDP as first published (ALFRED all-releases, same-vintage
+      levels, actual publication dates incl. shutdown delays). Mean revision first →
+      current = +0.38 pp ex-2020. DFM bias vs first release: +0.04 pp.
+- [x] Real-time baselines: Huber-robust AR(1) and expanding mean, alongside OLS AR(1).
+- [x] Diebold–Mariano (HLN) + 95% circular block bootstrap (block 4) on RMSE gaps.
+- Ex-2020 the DFM is indistinguishable from robust AR(1) (1.73 vs 1.72, p = 0.97) and
+  the mean (1.84, p = 0.71). Full-sample gaps large but p = 0.16–0.25 (4 COVID qtrs).
+  GDPNow better vs first release: 0.98 vs 1.77, p = 0.01 (n = 35).
+- Diagnostic (scripts/diagnose_information_timing.py): at quarter end only 2 of 11
+  series have month 3. With complete month-3 data RMSE ex-2020 1.75 → 1.57, but the
+  estimate still correlates 0.55 with last quarter's GDP (idiosyncratic GDP AR(1)
+  ≈ −0.8; small loadings) — a specification question, not tuned here.
+
+### Housekeeping
+- [x] News example regenerated (2026-07-31 → 2026-10-17, 2026 Q3); app captions that
+      stated the old conclusions now generated from data/evaluation_*.csv.
+- [x] CI (GitHub Actions, non-integration tests), LICENSE (MIT), CONTRIBUTING.md.
+
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3
 factors due to slow EM convergence with 5.")
+
+- 2026-10-17: Kept the 2-factor model as the dashboard model even though the
+  corrected backtest shows the 1-factor model ties ex-2020 and is better in 2020.
+  The 2-factor design was chosen before the backtest; switching on these results
+  would be selecting on the test set. Owner may revisit.
+- 2026-10-17: No model changes were made to "beat the AR(1)"; all changes are
+  bug fixes or added evaluation.

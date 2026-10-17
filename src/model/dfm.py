@@ -45,7 +45,7 @@ GDP_ADVANCE_LAG_DAYS = 30
 # Following the NY Fed Staff Nowcast approach (Bok et al., 2018), we use a
 # two-factor "blocked" structure:
 #
-#   Factor 1 — "global":  all 12 series load on this factor. It captures the
+#   Factor 1 — "global":  all 12 series (11 monthly + GDP) load on it. It captures the
 #                         overall business cycle.
 #   Factor 2 — "real":    only real-activity series load on this factor. It
 #                         captures idiosyncratic real-side variation not

@@ -187,9 +187,10 @@ def assert_no_lookahead(evaluation_date: str, target_quarter_start: str) -> None
     Our convention:
       evaluation_date = last calendar day of the target quarter.
       This guarantees the GDP advance estimate (released ~30 days later)
-      is NOT in the vintage data, while all 3 monthly releases for the
-      quarter are in (monthly data is released 2–6 weeks after month end,
-      so all 3 months are available by quarter end).
+      is NOT in the vintage data. Monthly data is released 2–6 weeks after
+      month end, so the vintage has the quarter's first two months for almost
+      every series but the third month only for the regional Fed surveys
+      (on average 2 of 11 series).
 
     Parameters
     ----------

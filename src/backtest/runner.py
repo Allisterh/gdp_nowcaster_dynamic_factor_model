@@ -5,8 +5,9 @@ What this module does, in plain English:
   We simulate what our DFM model would have predicted in real-time for each
   past quarter. For Q1 2020, for example:
 
-    1. Evaluation date = March 31, 2020 (all monthly data for Q1 is in;
-       the advance GDP release is still ~30 days away).
+    1. Evaluation date = March 31, 2020 (January and February data are in,
+       March only for the regional surveys; the advance GDP release is still
+       ~30 days away).
     2. Fetch ALFRED vintage data as of March 31, 2020 — the same dataset
        the model would have actually seen on that date.
     3. Fit the blocked DFM on that vintage dataset.
@@ -18,7 +19,7 @@ What this module does, in plain English:
 
 Why two RMSE numbers (with and without 2020):
   Q2 2020 GDP fell at a −31.4% annualized rate — an unprecedented pandemic
-  shock. Our 11-series DFM underestimates this badly, as does every small-scale
+  shock. Our 11-indicator DFM underestimates this badly, as does every small-scale
   DFM (even the 127-variable Fulton model over-corrects to −37%). The COVID
   recession was a supply shock outside the model's identifying assumptions
   (normal business-cycle factor dynamics). Including it inflates aggregate RMSE
@@ -69,12 +70,13 @@ def backtest_quarter_range(
     Evaluation date convention:
       evaluation_date = last calendar day of the target quarter.
       At this point:
-        ✓ All 3 monthly releases for the quarter are available (monthly data
-          is released 2–6 weeks after month-end, so January–March data is all
-          published by late March).
+        ✓ Months 1 and 2 of the quarter are published for nearly every
+          series; month 3 only for the regional Fed surveys (monthly data
+          comes out 2–6 weeks after month end).
         ✗ GDP advance release has NOT happened (~28 days after quarter end).
-      This gives us the maximum in-quarter monthly information with zero
-      GDP look-ahead.
+      This is the latest date that is guaranteed to have zero GDP look-ahead
+      for every quarter (see scripts/diagnose_information_timing.py for what
+      the missing third month costs).
 
     Parameters
     ----------

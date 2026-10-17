@@ -7,7 +7,7 @@ What this is:
   indicator (jobs, production, spending, etc.).
 
   Why build such a simple model at all?
-  This is our "benchmark." If the fancy DFM model (which uses 12+ indicators)
+  This is our "benchmark." If the fancy DFM (11 monthly indicators plus GDP)
   can't beat a model that only looks at past GDP, then the extra complexity
   isn't adding value. Good forecasting papers always report how much better
   the fancy model is compared to a simple baseline.

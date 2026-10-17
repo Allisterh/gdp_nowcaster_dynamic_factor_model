@@ -865,7 +865,7 @@ with tab2:
             '<div class="section-desc">Each pair of bars shows how strongly an '
             "indicator co-moves with each factor after the EM algorithm converges. "
             "<b style='color:#14365D'>Navy = global factor</b> (overall business-cycle "
-            "index that all 11 series load on); "
+            "index that all 11 indicators and GDP load on); "
             "<b style='color:#E8A33D'>amber = real-activity factor</b> (labour, output "
             "and spending sub-index). Survey indices and CPI load only on the global "
             "factor, so they show a single navy bar.</div>",
