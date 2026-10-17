@@ -910,14 +910,19 @@ with tab3:
         example_tidy, example_meta = _load_news_example()
 
     if example_tidy is not None:
+        # Describe the example from its own numbers, so regenerating the CSV
+        # can never leave stale prose behind.
+        _imp = example_tidy["impact_ann"]
+        _up, _down = _imp.idxmax(), _imp.idxmin()
         with _timed("tab3_example_render"):
             _render_news_result(
                 example_tidy, example_meta,
                 subtitle=(
                     f"<b>Worked example — {example_meta['before_end']} → "
-                    f"{example_meta['computed_on']}:</b> a quiet vintage window. The weak "
-                    "May Philly Fed survey dragged the nowcast down, almost fully offset "
-                    "by a strong NY Fed Empire State reading — a net revision of just "
+                    f"{example_meta['computed_on']}</b>, nowcasting "
+                    f"{example_meta['target_quarter']}. Largest upward push: "
+                    f"{th.label_for(_up)} ({_imp[_up]:+.3f} pp); largest drag: "
+                    f"{th.label_for(_down)} ({_imp[_down]:+.3f} pp). Net revision "
                     f"{example_meta['revision_ann']:+.3f} pp."
                 ),
             )
