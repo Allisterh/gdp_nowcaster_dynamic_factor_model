@@ -357,3 +357,68 @@ class TestBacktestIntegration:
 
         assert np.isfinite(stats["dfm_full_rmse"]) or np.isnan(stats["dfm_full_rmse"])
         assert stats["n_full"] >= 0
+
+
+# ── Through-the-quarter evaluation (Phase 8) ──────────────────────────────────
+
+def _fake_vintage(series_id, as_of_date, start="1990-01-01", use_cache=True):
+    """Synthetic ALFRED: monthly series end the month before as_of; GDP through
+    the last quarter whose (approximate) release is before as_of."""
+    from unittest.mock import MagicMock  # noqa: F401
+    as_of = pd.Timestamp(as_of_date)
+    if series_id == "GDPC1":
+        last_q = (as_of - pd.Timedelta(days=30)).to_period("Q") - 1
+        idx = pd.period_range("1999Q1", last_q, freq="Q").to_timestamp()
+        return pd.Series(np.linspace(100, 130, len(idx)), index=idx, name=series_id)
+    idx = pd.date_range("1999-01-01", (as_of.to_period("M") - 1).to_timestamp(), freq="MS")
+    return pd.Series(np.linspace(50, 60, len(idx)) + np.sin(np.arange(len(idx))), index=idx, name=series_id)
+
+
+class TestHorizonLookahead:
+
+    def test_assert_before_release(self):
+        from src.backtest.vintage import assert_before_release
+        assert_before_release("2020-01-29", "2020-01-30")
+        with pytest.raises(AssertionError, match="LOOK-AHEAD"):
+            assert_before_release("2020-01-30", "2020-01-30")
+
+    def test_ended_target_quarter_stays_nan(self):
+        """Mid-January vintage, target = previous quarter (ended, not yet published)."""
+        from unittest.mock import patch
+        from src.backtest import vintage
+        with patch.object(vintage, "fetch_vintage_series", side_effect=_fake_vintage):
+            _, q = vintage.build_vintage_dfm_data("2020-01-15", start="2005-01-01",
+                                                  use_cache=False, target_quarter="2019-10-01")
+        assert q.index[-1] == pd.Timestamp("2019-10-01")
+        assert pd.isna(q.loc["2019-10-01", "GDPC1"])
+        assert q.index.freqstr.startswith("Q")
+
+    def test_published_target_raises(self):
+        """If the vintage already holds the target's GDP, that is look-ahead."""
+        from unittest.mock import patch
+        from src.backtest import vintage
+        with patch.object(vintage, "fetch_vintage_series", side_effect=_fake_vintage):
+            with pytest.raises(AssertionError, match="LOOK-AHEAD"):
+                vintage.build_vintage_dfm_data("2020-03-15", start="2005-01-01",
+                                               use_cache=False, target_quarter="2019-10-01")
+
+    def test_lookahead_error_is_not_swallowed(self):
+        """run_single_quarter must re-raise look-ahead errors, not return a NaN row."""
+        from unittest.mock import patch
+        from src.backtest import runner
+        with patch.object(runner, "build_vintage_dfm_data",
+                          side_effect=AssertionError("LOOK-AHEAD DETECTED: test")):
+            with pytest.raises(AssertionError):
+                runner.run_single_quarter(pd.Timestamp("2019-10-01"), "2020-01-15",
+                                          n_factors=1, release_date="2020-01-30")
+
+
+class TestHorizonGrid:
+
+    def test_grid_stops_before_release_and_includes_quarter_end(self):
+        from src.backtest.runner import horizon_evaluation_dates as evaluation_dates
+        d = evaluation_dates(pd.Timestamp("2019-10-01"), pd.Timestamp("2020-01-30"))
+        assert d[0] == pd.Timestamp("2019-10-01")
+        assert pd.Timestamp("2019-12-31") in d
+        assert max(d) < pd.Timestamp("2020-01-30")
+        assert all((b - a).days <= 14 for a, b in zip(d, d[1:]))

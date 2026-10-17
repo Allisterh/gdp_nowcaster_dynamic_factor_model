@@ -99,6 +99,24 @@ def backtest_quarter_range(
     return result
 
 
+def horizon_evaluation_dates(
+    quarter_start: pd.Timestamp,
+    release_date: pd.Timestamp,
+    step_days: int = 14,
+) -> list[pd.Timestamp]:
+    """
+    Nowcast dates for the through-the-quarter backtest: every `step_days` from
+    the quarter's first day, plus its last day (links to the quarter-end
+    backtest), all strictly before the quarter's first GDP release.
+    """
+    q_end = quarter_start + pd.offsets.QuarterEnd(0)
+    dates = set(pd.date_range(quarter_start, release_date - pd.Timedelta(days=1),
+                              freq=f"{step_days}D"))
+    if q_end < release_date:
+        dates.add(q_end)
+    return sorted(d for d in dates if d < release_date)
+
+
 def _baseline_nowcasts_vintage(
     quarterly_df: pd.DataFrame,
     target_quarter: pd.Timestamp | None = None,

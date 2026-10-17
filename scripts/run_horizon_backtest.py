@@ -37,26 +37,44 @@ sys.path.insert(0, str(ROOT))
 from src.backtest.evaluation import gdpnow_to_log_units  # noqa: E402
 from src.backtest.runner import (  # noqa: E402
     _fetch_current_gdp_actuals,
+    horizon_evaluation_dates as evaluation_dates,
     load_first_release,
     run_single_quarter,
 )
-from src.backtest.vintage import fetch_gdpnow_vintage  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+
+from src.backtest.vintage import (  # noqa: E402
+    ALFRED_CACHE_DIR,
+    fetch_gdpnow_vintage,
+    fetch_vintage_series,
+)
+from src.data.fred_loader import SERIES_CATALOG  # noqa: E402
 
 OUTPUT = ROOT / "data" / "horizon_backtest.csv"
-STEP_DAYS = 14
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
 
 
-def evaluation_dates(quarter_start: pd.Timestamp, release_date: pd.Timestamp) -> list[pd.Timestamp]:
-    """Every STEP_DAYS from quarter start, plus quarter end; all strictly before release."""
-    q_end = quarter_start + pd.offsets.QuarterEnd(0)
-    dates = set(pd.date_range(quarter_start, release_date - pd.Timedelta(days=1),
-                              freq=f"{STEP_DAYS}D"))
-    if q_end < release_date:
-        dates.add(q_end)
-    return sorted(d for d in dates if d < release_date)
+def prefetch(jobs: list[tuple[str, str]], workers: int = 3) -> None:
+    """
+    Download missing ALFRED vintages in parallel. Each request takes ~2 s, so a
+    single thread uses only ~25 of FRED's 120 requests/minute; 3 threads stay
+    under the limit (fetch_vintage_series also backs off on HTTP 429).
+    """
+    missing = [(s, d) for s, d in jobs if not (ALFRED_CACHE_DIR / f"{s}_{d}.parquet").exists()]
+    print(f"Prefetching {len(missing)} ALFRED vintages with {workers} threads…", flush=True)
+
+    def get(job):
+        try:
+            fetch_vintage_series(job[0], job[1])
+        except Exception:
+            pass                      # e.g. series absent from ALFRED that early; handled later
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for i, _ in enumerate(ex.map(get, missing), 1):
+            if i % 250 == 0:
+                print(f"  {i}/{len(missing)}", flush=True)
 
 
 def main() -> None:
@@ -69,6 +87,12 @@ def main() -> None:
         done = pd.read_csv(OUTPUT, parse_dates=["target_quarter", "evaluation_date", "release_date"],
                            float_precision="round_trip")
     done_keys = set(zip(done.get("target_quarter", []), done.get("evaluation_date", [])))
+
+    grid = {q: evaluation_dates(q, pd.Timestamp(first_release.loc[q, "first_release_date"]))
+            for q in quarters}
+    jobs = [(s, str(d.date())) for q in reversed(quarters) for d in grid[q]
+            for s in list(SERIES_CATALOG) + (["GDPNOW"] if d >= pd.Timestamp("2016-05-17") else [])]
+    prefetch(jobs)
 
     rows = []
     for q in quarters:

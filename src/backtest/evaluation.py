@@ -68,6 +68,24 @@ def sample_masks(df: pd.DataFrame) -> dict[str, pd.Series]:
     }
 
 
+def dm_test_losses(d, h: int = 1) -> dict:
+    """Diebold–Mariano (HLN) on a series of loss differentials d_t (see dm_test)."""
+    d = pd.Series(d).dropna().to_numpy()
+    n = len(d)
+    if n < 3:
+        return {"stat": float("nan"), "pvalue": float("nan"), "mean_loss_diff": float("nan"), "n": n}
+    d_bar = d.mean()
+    dc = d - d_bar
+    lrv = dc @ dc / n
+    for k in range(1, h):
+        lrv += 2 * (dc[k:] @ dc[:-k]) / n
+    if lrv <= 0:
+        return {"stat": 0.0, "pvalue": 1.0, "mean_loss_diff": float(d_bar), "n": n}
+    stat = float(d_bar / np.sqrt(lrv / n) * np.sqrt((n + 1 - 2 * h + h * (h - 1) / n) / n))
+    return {"stat": stat, "pvalue": float(2 * stats.t.sf(abs(stat), df=n - 1)),
+            "mean_loss_diff": float(d_bar), "n": n}
+
+
 def dm_test(e_model, e_bench, h: int = 1) -> dict:
     """
     Diebold–Mariano test of equal predictive accuracy (squared-error loss).
@@ -81,24 +99,7 @@ def dm_test(e_model, e_bench, h: int = 1) -> dict:
     Returns dict(stat, pvalue, mean_loss_diff, n). Two-sided p-value.
     """
     pair = pd.DataFrame({"m": e_model, "b": e_bench}).dropna()
-    d = (pair["m"] ** 2 - pair["b"] ** 2).to_numpy()
-    n = len(d)
-    if n < 3:
-        return {"stat": float("nan"), "pvalue": float("nan"), "mean_loss_diff": float("nan"), "n": n}
-
-    d_bar = d.mean()
-    dc = d - d_bar
-    lrv = dc @ dc / n
-    for k in range(1, h):
-        lrv += 2 * (dc[k:] @ dc[:-k]) / n
-    if lrv <= 0:
-        return {"stat": 0.0, "pvalue": 1.0, "mean_loss_diff": float(d_bar), "n": n}
-
-    dm = d_bar / np.sqrt(lrv / n)
-    hln = np.sqrt((n + 1 - 2 * h + h * (h - 1) / n) / n)
-    stat = float(dm * hln)
-    pvalue = float(2 * stats.t.sf(abs(stat), df=n - 1))
-    return {"stat": stat, "pvalue": pvalue, "mean_loss_diff": float(d_bar), "n": n}
+    return dm_test_losses(pair["m"] ** 2 - pair["b"] ** 2, h=h)
 
 
 def block_bootstrap_rmse_diff(
@@ -128,7 +129,7 @@ def block_bootstrap_rmse_diff(
     return {"diff": float(point), "lo": float(lo), "hi": float(hi)}
 
 
-def accuracy_table(df: pd.DataFrame) -> pd.DataFrame:
+def accuracy_table(df: pd.DataFrame, models: dict[str, str] | None = None) -> pd.DataFrame:
     """
     RMSE, MAE and bias for every (target, sample, model) combination.
 
@@ -140,7 +141,7 @@ def accuracy_table(df: pd.DataFrame) -> pd.DataFrame:
         if tcol not in df:
             continue
         for sname, mask in sample_masks(df).items():
-            for mname, mcol in NOWCAST_COLUMNS.items():
+            for mname, mcol in (models or NOWCAST_COLUMNS).items():
                 if mcol not in df:
                     continue
                 err = (df.loc[mask, mcol] - df.loc[mask, tcol]).dropna()
@@ -204,7 +205,7 @@ def horizon_bucket(days_to_release: pd.Series) -> pd.Series:
     return out
 
 
-def horizon_accuracy(df: pd.DataFrame) -> pd.DataFrame:
+def horizon_accuracy(df: pd.DataFrame, models: dict[str, str] | None = None) -> pd.DataFrame:
     """
     accuracy_table() computed separately within each horizon bucket.
 
@@ -216,7 +217,7 @@ def horizon_accuracy(df: pd.DataFrame) -> pd.DataFrame:
     for label, *_ in HORIZON_BUCKETS:
         sub = df[b == label]
         if len(sub):
-            parts.append(accuracy_table(sub).assign(horizon=label))
+            parts.append(accuracy_table(sub, models).assign(horizon=label))
     return pd.concat(parts, ignore_index=True)
 
 
