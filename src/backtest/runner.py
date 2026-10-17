@@ -219,6 +219,51 @@ def run_single_quarter(
     }
 
 
+def result_row(
+    res: dict,
+    actual_gdp: pd.Series,
+    first_release: pd.DataFrame,
+) -> dict:
+    """
+    One backtest CSV row from a run_single_quarter() result.
+
+    Shared by run_backtest() and scripts/rerun_failed_quarters.py so a re-run
+    quarter always gets exactly the same columns. NaN propagates through * and
+    −, so a failed fit or a missing actual simply yields NaN errors (excluded
+    from every statistic).
+    """
+    target_q   = res["target_quarter"]
+    actual_ann = float(actual_gdp.get(target_q, float("nan"))) * 4
+    dfm_ann    = res["dfm_nowcast_qtr"] * 4
+    ar1_ann    = res["ar1_nowcast_qtr"] * 4
+    fr = first_release.loc[target_q] if target_q in first_release.index else None
+    return {
+        "quarter_label":          res["quarter_label"],
+        "target_quarter":         target_q,
+        "evaluation_date":        res["evaluation_date"],
+        "dfm_nowcast_ann":        dfm_ann,
+        "ar1_nowcast_ann":        ar1_ann,
+        "ar1_robust_nowcast_ann": res["ar1_robust_nowcast_qtr"] * 4,
+        "mean_nowcast_ann":       res["mean_nowcast_qtr"] * 4,
+        "actual_ann":             actual_ann,
+        "first_release_ann":      float(fr["first_release_ann"]) if fr is not None else float("nan"),
+        "first_release_date":     fr["first_release_date"] if fr is not None else pd.NaT,
+        "dfm_error_ann":          dfm_ann - actual_ann,
+        "ar1_error_ann":          ar1_ann - actual_ann,
+        "is_2020":                target_q.year == 2020,
+        "converged":              res["converged"],
+    }
+
+
+def load_first_release(quarters, use_cache: bool = True) -> pd.DataFrame:
+    """First-release GDP for the given quarters; empty (with a warning) if unavailable."""
+    try:
+        return fetch_gdp_first_release(list(quarters), use_cache=use_cache)
+    except Exception as exc:
+        logger.warning("First-release GDP unavailable (%s); column left NaN.", exc)
+        return pd.DataFrame(columns=["first_release_ann", "first_release_date"])
+
+
 def run_backtest(
     start_qs:      str = "2015-01-01",
     end_qs:        str = "2025-10-01",
@@ -295,12 +340,7 @@ def run_backtest(
     quarter_list = backtest_quarter_range(start_qs, end_qs)
 
     # Second scoring target: GDP growth as first published (advance estimate).
-    try:
-        first_release = fetch_gdp_first_release([q for q, _ in quarter_list],
-                                                use_cache=use_cache)
-    except Exception as exc:
-        logger.warning("First-release GDP unavailable (%s); column left NaN.", exc)
-        first_release = pd.DataFrame(columns=["first_release_ann", "first_release_date"])
+    first_release = load_first_release([q for q, _ in quarter_list], use_cache=use_cache)
     n = len(quarter_list)
     rows = []
 
@@ -322,32 +362,10 @@ def run_backtest(
             use_cache=use_cache,
         )
 
-        # NaN propagates through * and −, so a failed fit or a missing actual
-        # simply yields NaN errors (excluded from every statistic).
-        actual_ann = float(actual_gdp.get(target_q, float("nan"))) * 4
-        dfm_ann    = res["dfm_nowcast_qtr"] * 4
-        ar1_ann    = res["ar1_nowcast_qtr"] * 4
-
+        row = result_row(res, actual_gdp, first_release)
         status = "✓" if res["converged"] else "FAILED"
-        print(f"DFM={dfm_ann:>+6.1f}%  actual={actual_ann:>+6.1f}%  {status}")
-
-        fr = first_release.loc[target_q] if target_q in first_release.index else None
-        rows.append({
-            "quarter_label":          res["quarter_label"],
-            "target_quarter":         target_q,
-            "evaluation_date":        eval_date,
-            "dfm_nowcast_ann":        dfm_ann,
-            "ar1_nowcast_ann":        ar1_ann,
-            "ar1_robust_nowcast_ann": res["ar1_robust_nowcast_qtr"] * 4,
-            "mean_nowcast_ann":       res["mean_nowcast_qtr"] * 4,
-            "actual_ann":             actual_ann,
-            "first_release_ann":      float(fr["first_release_ann"]) if fr is not None else float("nan"),
-            "first_release_date":     fr["first_release_date"] if fr is not None else pd.NaT,
-            "dfm_error_ann":          dfm_ann - actual_ann,
-            "ar1_error_ann":          ar1_ann - actual_ann,
-            "is_2020":                target_q.year == 2020,
-            "converged":              res["converged"],
-        })
+        print(f"DFM={row['dfm_nowcast_ann']:>+6.1f}%  actual={row['actual_ann']:>+6.1f}%  {status}")
+        rows.append(row)
 
     df = pd.DataFrame(rows)
 
