@@ -270,6 +270,38 @@ a step.
       stated the old conclusions now generated from data/evaluation_*.csv.
 - [x] CI (GitHub Actions, non-integration tests), LICENSE (MIT), CONTRIBUTING.md.
 
+## Phase 8 — Accuracy through the quarter + uncertainty (pre-registered 2026-10-17)
+
+Design fixed BEFORE any results were computed (commit this entry first):
+- Grid: every target quarter 2015Q1–2025Q4; nowcast every 14 days from the quarter's
+  first day up to the day before its first GDP release (ALFRED first-release date).
+- Models: 2-factor DFM (dashboard model), 1-factor DFM, robust AR(1), expanding mean,
+  GDPNow (ALFRED vintage on the same date, where it exists). Same specs as Phase 7.
+- Targets/samples: first-release and current-vintage GDP; ex-2020 and full sample.
+- Reporting: RMSE by days-until-release bucket (>60, 31–60, 1–30 days); DM tests per bucket.
+- Uncertainty: Kalman-smoother standard error → 68% / 90% Gaussian intervals; report
+  coverage, PIT histogram, CRPS. These bands ignore parameter uncertainty; expect
+  under-coverage, report it either way.
+- No model changes in response to these results.
+- Addendum (before running): each quarter's last day is added to the 14-day grid so
+  every quarter also has the Phase 7 quarter-end nowcast (spot-check + continuity).
+
+### Phase 8 results (2026-10-17)
+- [x] 448 nowcasts, 0 failed fits. Quarter-end rows equal Phase 7 exactly (all models);
+      all evaluation dates precede the GDP release.
+- [x] Vintages rebuilt from one revision-history call per series (13 calls vs ~5,000);
+      validated identical to 1,036 directly-fetched vintages. Pitfall found: published
+      blanks (Oct 2025 shutdown) must be kept — groupby().last() silently skips them.
+- RMSE ex-2020 vs first release (>60 / 31–60 / 1–30 days before release):
+  DFM 2f 1.94 / 1.71 / 1.76; robust AR(1) 1.71 / 1.63 / 1.71; mean 1.79 / 1.69 / 1.77;
+  GDPNow 1.47 / 1.17 / 1.02. DFM vs GDPNow DM p 0.08 / 0.05 / 0.02; vs robust AR(1)
+  p 0.24 / 0.82 / 0.83. DFM plateaus by mid-quarter; no significant edge over baselines.
+- Calibration (ex-2020, first release): 68%/90% bands cover 82%/96% — too wide, opposite
+  of the pre-registered expectation. POST-HOC split: 2015–19 91%/100% (±1.52 vs RMSE
+  0.95); 2020 8%/10%; 2021–25 73%/92% (±2.78 vs RMSE 2.41). Constant-variance model →
+  candidate next step: stochastic volatility (not implemented; would be a new,
+  pre-registered spec).
+
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3
 factors due to slow EM convergence with 5.")

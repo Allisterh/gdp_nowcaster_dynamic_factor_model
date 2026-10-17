@@ -31,6 +31,16 @@ Order matters — each step reads the previous step's output:
 | 5 | `python scripts/precompute_news_example.py` | `data/news_example.csv`, `data/news_example_meta.json` |
 | 6 | `streamlit run app/streamlit_app.py --server.port 8599`, then `python scripts/screenshot_tabs.py after_redesign` | `docs/figures/after_redesign_tab{1-4}.png` |
 
+Through-the-quarter evaluation (after step 2):
+
+| Step | Command | Writes |
+|---|---|---|
+| 7 | `python scripts/run_horizon_backtest.py` | `data/horizon_backtest.csv` (448 nowcasts, ~15 min, resumable) |
+| 8 | `python scripts/evaluate_horizon.py` | `data/horizon_*.csv`, `data/calibration*.csv`, `docs/figures/horizon_rmse.png`, `fan_chart_example.png`, `pit_histogram.png` |
+
+Step 7 fetches each series' revision history once (`data/alfred/*_all_releases.parquet`)
+and rebuilds every needed vintage locally. Delete those files to refresh them.
+
 Optional diagnostic: `python scripts/diagnose_information_timing.py`.
 
 **Data and caching.** Each backtest quarter uses the ALFRED vintage from the

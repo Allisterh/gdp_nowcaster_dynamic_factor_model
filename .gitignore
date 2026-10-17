@@ -26,6 +26,11 @@ data/*
 !data/news_example_meta.json
 !data/evaluation_accuracy.csv
 !data/evaluation_tests.csv
+!data/horizon_backtest.csv
+!data/horizon_accuracy.csv
+!data/horizon_tests.csv
+!data/calibration.csv
+!data/calibration_by_period.csv
 
 # Jupyter
 .ipynb_checkpoints/

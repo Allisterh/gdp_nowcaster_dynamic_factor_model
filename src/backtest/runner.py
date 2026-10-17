@@ -45,6 +45,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.vintage import (
+    assert_before_release,
     assert_no_lookahead,
     build_vintage_dfm_data,
     fetch_gdp_first_release,
@@ -98,7 +99,28 @@ def backtest_quarter_range(
     return result
 
 
-def _baseline_nowcasts_vintage(quarterly_df: pd.DataFrame) -> dict[str, float]:
+def horizon_evaluation_dates(
+    quarter_start: pd.Timestamp,
+    release_date: pd.Timestamp,
+    step_days: int = 14,
+) -> list[pd.Timestamp]:
+    """
+    Nowcast dates for the through-the-quarter backtest: every `step_days` from
+    the quarter's first day, plus its last day (links to the quarter-end
+    backtest), all strictly before the quarter's first GDP release.
+    """
+    q_end = quarter_start + pd.offsets.QuarterEnd(0)
+    dates = set(pd.date_range(quarter_start, release_date - pd.Timedelta(days=1),
+                              freq=f"{step_days}D"))
+    if q_end < release_date:
+        dates.add(q_end)
+    return sorted(d for d in dates if d < release_date)
+
+
+def _baseline_nowcasts_vintage(
+    quarterly_df: pd.DataFrame,
+    target_quarter: pd.Timestamp | None = None,
+) -> dict[str, float]:
     """
     Real-time benchmark nowcasts from the vintage quarterly GDP panel.
 
@@ -109,16 +131,33 @@ def _baseline_nowcasts_vintage(quarterly_df: pd.DataFrame) -> dict[str, float]:
                                the 2020 crash-and-rebound pair
       mean_nowcast_qtr       : expanding mean of growth since the sample start
 
+    If target_quarter is h > 1 quarters after the last published GDP (early in
+    a quarter, before the previous quarter's release), the AR(1)s iterate h
+    steps: y_{t+h} = a + b·y_{t+h-1}. Default target: the next quarter.
+
     Returns quarterly % (not annualized); NaN if fewer than 4 quarters exist.
     """
     gdp = quarterly_df["GDPC1"].dropna()
     if len(gdp) < 4:
         return {k: float("nan") for k in
                 ("ar1_nowcast_qtr", "ar1_robust_nowcast_qtr", "mean_nowcast_qtr")}
-    last_gdp = float(gdp.iloc[-1])
+    last_q = pd.Timestamp(gdp.index[-1])
+    h = 1
+    if target_quarter is not None:
+        tq = pd.Timestamp(target_quarter).to_period("Q")
+        h = tq.ordinal - last_q.to_period("Q").ordinal
+        if h < 1:
+            raise ValueError(f"Target {tq} is already published in this vintage.")
+
+    def iterate(fit) -> float:
+        y = float(gdp.iloc[-1])
+        for _ in range(h):
+            y = float(ar1_nowcast(fit, y)["nowcast_qtr_pct"])
+        return y
+
     return {
-        "ar1_nowcast_qtr":        float(ar1_nowcast(fit_ar1(gdp), last_gdp)["nowcast_qtr_pct"]),
-        "ar1_robust_nowcast_qtr": float(ar1_nowcast(fit_ar1_robust(gdp), last_gdp)["nowcast_qtr_pct"]),
+        "ar1_nowcast_qtr":        iterate(fit_ar1(gdp)),
+        "ar1_robust_nowcast_qtr": iterate(fit_ar1_robust(gdp)),
         "mean_nowcast_qtr":       mean_nowcast(gdp)["nowcast_qtr_pct"],
     }
 
@@ -130,9 +169,18 @@ def run_single_quarter(
     n_factors:       int = 1,
     start_data:      str = "2000-01-01",
     use_cache:       bool = True,
+    release_date:    str | pd.Timestamp | None = None,
 ) -> dict:
     """
     Run one backtest point: fit the DFM on vintage data and return the nowcast.
+
+    Two evaluation designs:
+      * release_date=None (quarter-end backtest): evaluation_date must be on or
+        before the target quarter's last day (assert_no_lookahead).
+      * release_date given (through-the-quarter backtest): evaluation_date may
+        fall after the quarter ends but must precede the GDP release
+        (assert_before_release); the target is passed explicitly because two
+        quarters can be unpublished at once.
 
     LOOK-AHEAD ASSERTION: assert_no_lookahead() runs first. If it raises, the
     calling code has a bug and the backtest must be fixed before proceeding.
@@ -163,7 +211,11 @@ def run_single_quarter(
         converged         : bool
     """
     # Hard look-ahead check — this must pass before any data is loaded
-    assert_no_lookahead(evaluation_date, str(target_quarter.date()))
+    if release_date is None:
+        assert_no_lookahead(evaluation_date, str(target_quarter.date()))
+    else:
+        assert_before_release(evaluation_date, release_date)
+    explicit = target_quarter if release_date is not None else None
 
     qtr_num   = (target_quarter.month - 1) // 3 + 1
     qtr_label = f"{target_quarter.year} Q{qtr_num}"
@@ -174,7 +226,10 @@ def run_single_quarter(
             as_of_date=evaluation_date,
             start=start_data,
             use_cache=use_cache,
+            target_quarter=explicit,
         )
+    except AssertionError:
+        raise                       # look-ahead errors must never become NaN rows
     except Exception as exc:
         logger.error("build_vintage_dfm_data failed for %s: %s", qtr_label, exc)
         return {
@@ -182,6 +237,7 @@ def run_single_quarter(
             "evaluation_date": evaluation_date,
             "quarter_label":   qtr_label,
             "dfm_nowcast_qtr": float("nan"),
+            "dfm_nowcast_se_ann": float("nan"),
             "ar1_nowcast_qtr": float("nan"),
             "ar1_robust_nowcast_qtr": float("nan"),
             "mean_nowcast_qtr": float("nan"),
@@ -189,7 +245,7 @@ def run_single_quarter(
         }
 
     # Benchmarks from the same vintage data
-    baselines = _baseline_nowcasts_vintage(quarterly_df)
+    baselines = _baseline_nowcasts_vintage(quarterly_df, target_quarter=explicit)
 
     # DFM — build block structure from the vintage panel
     fb = factor_blocks
@@ -201,12 +257,14 @@ def run_single_quarter(
             monthly_df, quarterly_df,
             factor_blocks=fb, n_factors=n_factors, maxiter=500,
         )
-        nowcast    = extract_nowcast(results, quarterly_df)
+        nowcast    = extract_nowcast(results, quarterly_df, target_quarter=explicit)
         dfm_qtr    = nowcast["nowcast_qtr_pct"] if nowcast is not None else float("nan")
+        dfm_se     = nowcast["nowcast_se_ann"] if nowcast is not None else float("nan")
         converged  = True
     except Exception as exc:
         logger.error("fit_dfm failed for %s: %s", qtr_label, exc)
         dfm_qtr   = float("nan")
+        dfm_se    = float("nan")
         converged = False
 
     return {
@@ -214,6 +272,7 @@ def run_single_quarter(
         "evaluation_date": evaluation_date,
         "quarter_label":   qtr_label,
         "dfm_nowcast_qtr": dfm_qtr,
+        "dfm_nowcast_se_ann": dfm_se,
         **baselines,
         "converged":       converged,
     }
@@ -242,6 +301,7 @@ def result_row(
         "target_quarter":         target_q,
         "evaluation_date":        res["evaluation_date"],
         "dfm_nowcast_ann":        dfm_ann,
+        "dfm_nowcast_se_ann":     res.get("dfm_nowcast_se_ann", float("nan")),
         "ar1_nowcast_ann":        ar1_ann,
         "ar1_robust_nowcast_ann": res["ar1_robust_nowcast_qtr"] * 4,
         "mean_nowcast_ann":       res["mean_nowcast_qtr"] * 4,

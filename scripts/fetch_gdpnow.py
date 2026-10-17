@@ -37,32 +37,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import pandas as pd
 
-from src.backtest.vintage import fetch_vintage_series
+from src.backtest.vintage import fetch_gdpnow_vintage
 
 BACKTEST_CSV = Path("data/backtest_results_2factor.csv")
 OUTPUT_CSV   = Path("data/gdpnow_eoq.csv")
 
-# First GDPNow vintage archived in ALFRED (checked via get_series_vintage_dates).
-ALFRED_GDPNOW_START = pd.Timestamp("2016-05-17")
-
-
 def fetch_gdpnow_for_quarter(target_quarter: str, evaluation_date: str) -> float:
-    """
-    GDPNow's nowcast for `target_quarter`, as published on `evaluation_date`.
-
-    We fetch the full GDPNOW series as of the evaluation date, then pick the
-    observation indexed at the target quarter's start date. Returns NaN when
-    ALFRED has no vintage that early or GDPNow hadn't started covering the
-    quarter yet.
-    """
-    if pd.Timestamp(evaluation_date) < ALFRED_GDPNOW_START:
-        return np.nan
-    try:
-        vintage = fetch_vintage_series("GDPNOW", evaluation_date, start="2014-01-01")
-    except ValueError:
-        return np.nan          # empty vintage — series not available that day
-    value = vintage.get(pd.Timestamp(target_quarter), np.nan)
-    return float(value)
+    """GDPNow's nowcast for `target_quarter` as published on `evaluation_date` (NaN if none)."""
+    return fetch_gdpnow_vintage(target_quarter, evaluation_date)
 
 
 def main() -> pd.DataFrame:
