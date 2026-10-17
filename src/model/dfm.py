@@ -368,6 +368,7 @@ def quarter_end_month(results: Any, quarter_start: pd.Timestamp | pd.Period) -> 
 def extract_nowcast(
     results: Any,
     quarterly_df: pd.DataFrame,
+    target_quarter: pd.Timestamp | str | None = None,
 ) -> dict | None:
     """
     Extract the current-quarter GDP growth nowcast from a fitted DFM.
@@ -394,6 +395,10 @@ def extract_nowcast(
     quarterly_df : pd.DataFrame
         The same quarterly DataFrame passed to fit_dfm(), so we know where
         GDP actuals are vs. where they are NaN (= "nowcast" periods).
+    target_quarter : Timestamp, optional
+        Quarter (start date) to nowcast. Default: the last unreleased quarter.
+        Needed when two quarters are unreleased (early in a quarter, before
+        the previous quarter's GDP is published). Must be NaN in quarterly_df.
 
     Returns
     -------
@@ -405,6 +410,9 @@ def extract_nowcast(
             'quarter'          : human-readable label (e.g., "2026 Q3")
             'nowcast_qtr_pct'  : predicted quarterly log-diff growth (%)
             'nowcast_ann_pct'  : same × 4 (annualized, comparable to GDPNow)
+            'nowcast_se_ann'   : standard error of the annualized nowcast from the
+                                 Kalman smoother (state uncertainty only; ignores
+                                 parameter-estimation uncertainty)
 
     Raises
     ------
@@ -424,15 +432,22 @@ def extract_nowcast(
         logger.warning("No missing GDP quarters found — no nowcast to compute.")
         return None
 
-    nowcast_date  = pd.Timestamp(missing_actuals.index[-1])
+    if target_quarter is not None:
+        nowcast_date = pd.Timestamp(target_quarter).to_period("Q").to_timestamp()
+        if nowcast_date not in missing_actuals.index:
+            raise ValueError(f"Target quarter {nowcast_date.date()} is not an "
+                             "unreleased (NaN) row of quarterly_df.")
+    else:
+        nowcast_date = pd.Timestamp(missing_actuals.index[-1])
     quarter_label = f"{nowcast_date.year} Q{nowcast_date.quarter}"
     impact_month  = quarter_end_month(results, nowcast_date)
 
     # get_prediction (unlike fittedvalues) undoes the model's standardization
     # (original_scale=True is the DynamicFactorMQ default).
-    pred = results.get_prediction(
+    prediction = results.get_prediction(
         start=impact_month, end=impact_month, information_set="smoothed",
-    ).predicted_mean
+    )
+    pred = prediction.predicted_mean
     if gdp_col not in pred.columns:
         raise ValueError(f"'{gdp_col}' not in model predictions: {list(pred.columns)}")
 
@@ -446,6 +461,7 @@ def extract_nowcast(
         "quarter":         quarter_label,
         "nowcast_qtr_pct": nowcast_val,
         "nowcast_ann_pct": nowcast_val * 4,
+        "nowcast_se_ann":  float(prediction.se_mean[gdp_col].iloc[0]) * 4,
     }
 
 

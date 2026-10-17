@@ -342,3 +342,35 @@ class TestDFMIntegration:
             f"the plausible range (−20%, +15%). This may indicate a data or "
             f"model setup error."
         )
+
+
+class TestExtractNowcastTargetAndSE:
+
+    def test_se_matches_smoother(self, synthetic_fit):
+        results, _, quarterly, *_ = synthetic_fit
+        out = extract_nowcast(results, quarterly)
+        se = results.get_prediction(start="2019-12", end="2019-12",
+                                    information_set="smoothed").se_mean["GDPC1"].iloc[0]
+        assert out["nowcast_se_ann"] == pytest.approx(4 * float(se))
+        assert out["nowcast_se_ann"] > 0
+
+    def test_explicit_target_must_be_unreleased(self, synthetic_fit):
+        results, _, quarterly, *_ = synthetic_fit
+        with pytest.raises(ValueError, match="unreleased"):
+            extract_nowcast(results, quarterly, target_quarter="2019-07-01")
+
+    def test_explicit_earlier_target_when_two_quarters_unreleased(self):
+        """Q3 and Q4 2019 both unpublished: target Q3 reads September, not December."""
+        import warnings
+        from src.model.dfm import fit_dfm
+        monthly, quarterly, _, truth_q3 = _synthetic_nowcast_problem()
+        quarterly = quarterly.copy()
+        quarterly.loc["2019-07-01", "GDPC1"] = np.nan
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = fit_dfm(monthly, quarterly, n_factors=1, maxiter=200)
+        out = extract_nowcast(res, quarterly, target_quarter="2019-07-01")
+        assert out["quarter"] == "2019 Q3"
+        assert out["impact_month"] == pd.Period("2019-09", freq="M")
+        assert abs(out["nowcast_qtr_pct"] - truth_q3) < 0.5
+        assert extract_nowcast(res, quarterly)["quarter"] == "2019 Q4"     # default unchanged

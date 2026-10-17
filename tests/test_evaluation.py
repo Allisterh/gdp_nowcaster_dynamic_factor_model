@@ -169,3 +169,49 @@ class TestFirstRelease:
 
         assert out.loc["2020-04-01", "first_release_date"] == pd.Timestamp("2020-07-30")
         assert out.loc["2020-04-01", "first_release_ann"] == pytest.approx(400 * np.log(111 / 110))
+
+
+class TestHorizonAndCalibration:
+
+    def test_buckets(self):
+        from src.backtest.evaluation import horizon_bucket
+        b = horizon_bucket(pd.Series([90, 61, 60, 31, 30, 1]))
+        assert list(b) == [">60 days before release"] * 2 + ["31–60 days before release"] * 2 \
+            + ["1–30 days before release"] * 2
+
+    def test_coverage_of_correct_gaussian(self):
+        from src.backtest.evaluation import interval_coverage
+        rng = np.random.default_rng(10)
+        y = rng.normal(0, 2, 20_000)
+        m, s = np.zeros_like(y), np.full_like(y, 2.0)
+        assert interval_coverage(m, s, y, 0.90) == pytest.approx(0.90, abs=0.01)
+        assert interval_coverage(m, s / 2, y, 0.90) < 0.70      # bands too narrow
+
+    def test_pit_uniform_when_calibrated(self):
+        from src.backtest.evaluation import pit_values
+        rng = np.random.default_rng(11)
+        y = rng.normal(1, 1.5, 20_000)
+        pit = pit_values(np.ones_like(y), np.full_like(y, 1.5), y)
+        assert np.histogram(pit, bins=10, range=(0, 1))[0].min() > 1_800
+
+    def test_crps_known_value_and_limit(self):
+        from src.backtest.evaluation import gaussian_crps
+        # y = mean: CRPS = s·(2φ(0) − 1/√π) = s·(√2 − 1)/√π
+        assert gaussian_crps([0.0], [1.0], [0.0]) == pytest.approx((np.sqrt(2) - 1) / np.sqrt(np.pi))
+        assert gaussian_crps([0.0], [1e-9], [3.0]) == pytest.approx(3.0, abs=1e-6)
+
+
+class TestHorizonBaselines:
+
+    def test_two_step_ar1_when_previous_quarter_unpublished(self):
+        """Target two quarters after the last published GDP → AR(1) iterates twice."""
+        from src.backtest.runner import _baseline_nowcasts_vintage
+        from src.model.baseline import ar1_nowcast, fit_ar1
+        rng = np.random.default_rng(12)
+        idx = pd.date_range("2000-01-01", periods=60, freq="QS")
+        q = pd.DataFrame({"GDPC1": rng.normal(0.5, 0.5, 60)}, index=idx)
+        q.iloc[-2:, 0] = np.nan                                  # two unpublished quarters
+        out = _baseline_nowcasts_vintage(q, target_quarter=idx[-1])
+        fit = fit_ar1(q["GDPC1"].dropna())
+        one = ar1_nowcast(fit, float(q["GDPC1"].dropna().iloc[-1]))["nowcast_qtr_pct"]
+        assert out["ar1_nowcast_qtr"] == pytest.approx(ar1_nowcast(fit, one)["nowcast_qtr_pct"])

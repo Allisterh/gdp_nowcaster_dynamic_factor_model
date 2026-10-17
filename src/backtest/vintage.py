@@ -218,10 +218,44 @@ def assert_no_lookahead(evaluation_date: str, target_quarter_start: str) -> None
         )
 
 
+def assert_before_release(evaluation_date, release_date) -> None:
+    """
+    Hard check for the through-the-quarter evaluation: a nowcast must be made
+    strictly before the target quarter's GDP is first published.
+    (assert_no_lookahead() is the stricter quarter-end version.)
+    """
+    if pd.Timestamp(evaluation_date) >= pd.Timestamp(release_date):
+        raise AssertionError(
+            f"LOOK-AHEAD DETECTED: evaluation_date={pd.Timestamp(evaluation_date).date()} "
+            f"is on/after the GDP release {pd.Timestamp(release_date).date()}."
+        )
+
+
+def fetch_gdpnow_vintage(target_quarter, evaluation_date, use_cache: bool = True) -> float:
+    """
+    GDPNow's estimate for target_quarter as published on evaluation_date
+    (compounded annual rate, as GDPNow reports it), or NaN if none existed.
+
+    ALFRED's GDPNow archive starts 2016-05-17, and GDPNow publishes its first
+    estimate for a quarter roughly a month into it, so early dates are NaN.
+    """
+    if pd.Timestamp(evaluation_date) < pd.Timestamp("2016-05-17"):
+        return float("nan")
+    try:
+        s = fetch_vintage_series("GDPNOW", str(pd.Timestamp(evaluation_date).date()),
+                                 start="2014-01-01", use_cache=use_cache)
+    except ValueError:
+        return float("nan")
+    s.index = pd.DatetimeIndex(s.index).to_period("Q").to_timestamp()
+    v = s.get(pd.Timestamp(target_quarter).to_period("Q").to_timestamp(), float("nan"))
+    return float(v) if pd.notna(v) else float("nan")
+
+
 def build_vintage_dfm_data(
     as_of_date: str,
     start: str = "2000-01-01",
     use_cache: bool = True,
+    target_quarter: pd.Timestamp | str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build the DFM panel (monthly_df, quarterly_df) using ALFRED vintage data.
@@ -342,9 +376,21 @@ def build_vintage_dfm_data(
     # the target: a single-row extension would leave a hole in the index and
     # crash pandas' frequency-conformance check (see dfm.py for the same fix
     # and the concrete failure mode).
+    #
+    # target_quarter (optional) lets the nowcast date fall AFTER the target
+    # quarter has ended but before its GDP is published (the through-the-
+    # quarter evaluation). The vintage then cannot contain the target's GDP;
+    # if it does, the evaluation date is past the release — a look-ahead error.
     current_qtr = as_of_ts.to_period("Q").to_timestamp()
-    if gdp_growth.index[-1] < current_qtr:
-        full_index = pd.date_range(gdp_growth.index[0], current_qtr, freq="QS-JAN")
+    target_qtr = (pd.Timestamp(target_quarter).to_period("Q").to_timestamp()
+                  if target_quarter is not None else current_qtr)
+    if target_qtr in gdp_growth.index and pd.notna(gdp_growth.loc[target_qtr]):
+        raise AssertionError(
+            f"LOOK-AHEAD DETECTED: the {as_of_date} vintage already contains GDP for "
+            f"{target_qtr.date()} — that quarter was published before the evaluation date."
+        )
+    if gdp_growth.index[-1] < target_qtr:
+        full_index = pd.date_range(gdp_growth.index[0], target_qtr, freq="QS-JAN")
         gdp_growth = gdp_growth.reindex(full_index)
 
     quarterly_df = pd.DataFrame({"GDPC1": gdp_growth})
@@ -425,3 +471,85 @@ def fetch_gdp_first_release(
             "first_release_ann": 400.0 * np.log(first["value"] / prev["value"]),
         }
     return pd.DataFrame.from_dict(out, orient="index").rename_axis("target_quarter")
+
+
+# ── Reconstructing vintages from one revision-history request ─────────────────
+#
+# Fetching each (series, date) vintage separately costs one ALFRED request
+# (~2 s, rate-limited) per file; the through-the-quarter backtest needs ~5,000.
+# ALFRED can instead return a series' full revision history in ONE request:
+# every (observation date, value, realtime_start) ever published. The vintage
+# as of day d is then: for each observation, the most recent value whose
+# realtime_start ≤ d; observations with no such value were not yet published.
+# materialize_vintages() writes those reconstructions into the same per-file
+# cache fetch_vintage_series() reads, so nothing downstream changes.
+# tests/test_backtest.py checks the reconstruction logic; scripts/
+# run_horizon_backtest.py verifies it against directly-fetched vintages.
+
+RELEASES_FROM = "2014-01-01"     # vintages needed start in 2015
+
+
+def fetch_all_releases(series_id: str, use_cache: bool = True) -> pd.DataFrame:
+    """Every published value of series_id since RELEASES_FROM (one ALFRED call)."""
+    path = ALFRED_CACHE_DIR / f"{series_id}_all_releases.parquet"
+    if use_cache and path.exists():
+        return pd.read_parquet(path)
+    api_key = os.getenv("FRED_API_KEY")
+    if not api_key:
+        raise EnvironmentError("FRED_API_KEY not set. Check your .env file.")
+    logger.info("ALFRED fetch: all releases of %s", series_id)
+    rel = Fred(api_key=api_key).get_series_all_releases(series_id, realtime_start=RELEASES_FROM)
+    rel = rel[["date", "realtime_start", "value"]].copy()
+    rel["date"] = pd.to_datetime(rel["date"])
+    rel["realtime_start"] = pd.to_datetime(rel["realtime_start"])
+    rel["value"] = pd.to_numeric(rel["value"], errors="coerce")
+    rel.to_parquet(path)
+    time.sleep(0.6)
+    return rel
+
+
+def vintage_from_releases(releases: pd.DataFrame, as_of_date, series_id: str) -> pd.Series:
+    """
+    The series as it stood on as_of_date, rebuilt from its revision history.
+    Same shape as a direct ALFRED vintage fetch (raw values, DatetimeIndex
+    from _ALFRED_FETCH_FROM). Raises ValueError if nothing was published yet.
+    """
+    as_of = pd.Timestamp(as_of_date)
+    known = releases[(releases["realtime_start"] <= as_of)
+                     & (releases["date"] >= pd.Timestamp(_ALFRED_FETCH_FROM))]
+    if known.empty:
+        raise ValueError(f"No {series_id} values published by {as_of.date()}.")
+    # Keep the latest row per observation EVEN IF its value is missing ("."):
+    # ALFRED publishes explicit blanks (e.g., Oct 2025 data skipped in the
+    # shutdown) and dropping them would let a later diff span two months.
+    # (groupby().last() would silently skip the blank and return an older value.)
+    latest = (known.sort_values(["date", "realtime_start"])
+                   .drop_duplicates("date", keep="last")
+                   .set_index("date")["value"])
+    if latest.isna().all():
+        raise ValueError(f"No {series_id} values published by {as_of.date()}.")
+    latest.index = pd.DatetimeIndex(latest.index)
+    latest.index.name = None
+    return latest.rename(series_id).astype(float)
+
+
+def materialize_vintages(jobs: list[tuple[str, str]], use_cache: bool = True) -> int:
+    """
+    Write per-(series, date) vintage cache files from revision histories, for
+    every job not already cached. Returns the number of files written.
+    """
+    by_series: dict[str, list[str]] = {}
+    for sid, d in jobs:
+        if not _alfred_cache_path(sid, d).exists():
+            by_series.setdefault(sid, []).append(d)
+    written = 0
+    for sid, dates in by_series.items():
+        releases = fetch_all_releases(sid, use_cache=use_cache)
+        for d in dates:
+            try:
+                s = vintage_from_releases(releases, d, sid)
+            except ValueError:
+                continue                 # not yet published: leave uncached (handled as before)
+            s.to_frame().to_parquet(_alfred_cache_path(sid, d))
+            written += 1
+    return written
