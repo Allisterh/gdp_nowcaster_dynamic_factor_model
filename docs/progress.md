@@ -313,7 +313,8 @@ Design fixed BEFORE any results were computed (commit this entry first):
 - [x] .github/workflows/site.yml: daily rebuild → GitHub Pages
       (https://jrussellgoodman.github.io/gdp_nowcaster/). Needs repo secret FRED_API_KEY
       and Pages source = GitHub Actions.
-- [ ] Retire the Streamlit app once the page is live (owner deletes it on share.streamlit.io).
+- [x] Streamlit app retired (deleted on Streamlit Cloud; app/, .streamlit/, dashboard
+      screenshots, news-example data and design_system.md removed from the repo).
 
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3
