@@ -187,9 +187,10 @@ def assert_no_lookahead(evaluation_date: str, target_quarter_start: str) -> None
     Our convention:
       evaluation_date = last calendar day of the target quarter.
       This guarantees the GDP advance estimate (released ~30 days later)
-      is NOT in the vintage data, while all 3 monthly releases for the
-      quarter are in (monthly data is released 2–6 weeks after month end,
-      so all 3 months are available by quarter end).
+      is NOT in the vintage data. Monthly data is released 2–6 weeks after
+      month end, so the vintage has the quarter's first two months for almost
+      every series but the third month only for the regional Fed surveys
+      (on average 2 of 11 series).
 
     Parameters
     ----------
@@ -355,3 +356,72 @@ def build_vintage_dfm_data(
         len(quarterly_df),
     )
     return monthly_df, quarterly_df
+
+
+def fetch_gdp_first_release(
+    quarters: list[pd.Timestamp] | pd.DatetimeIndex,
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    """
+    Real GDP growth for each quarter AS FIRST PUBLISHED (usually the advance
+    estimate), with the date it was published.
+
+    Why a second scoring target:
+      The backtest's default "actual" is today's fully revised GDP. A nowcast
+      made in real time is arguably aiming at the number BEA will publish next
+      (the advance estimate) — which is also what GDPNow targets. Revisions
+      between the two can be a percentage point or more, so reporting both is
+      the honest way to score.
+
+    How:
+      One ALFRED call returns every published revision of GDPC1. For quarter t
+      we find its first publication date r_t, then compute growth from the
+      levels of t and t−1 *in that same vintage* (mixing vintages would let a
+      benchmark revision between them distort the growth rate). Using the
+      actual first-publication date — not a fixed "+30 days" — also handles
+      releases delayed by government shutdowns (e.g., Q4 2018, Q3 2025).
+
+    Returns
+    -------
+    DataFrame indexed by quarter-start date with columns
+      first_release_date : Timestamp the value was first published
+      first_release_ann  : annualized log growth (%) as first published
+    """
+    quarters = pd.DatetimeIndex(quarters)
+    cache_path = ALFRED_CACHE_DIR / "GDPC1_all_releases.parquet"
+
+    releases = None
+    if use_cache and cache_path.exists():
+        releases = pd.read_parquet(cache_path)
+        if not set(quarters).issubset(set(releases["date"])):
+            releases = None                     # stale: a newer quarter is needed
+    if releases is None:
+        api_key = os.getenv("FRED_API_KEY")
+        if not api_key:
+            raise EnvironmentError("FRED_API_KEY not set. Check your .env file.")
+        logger.info("ALFRED fetch: all releases of GDPC1")
+        releases = Fred(api_key=api_key).get_series_all_releases(
+            "GDPC1", realtime_start="2010-01-01",
+        )
+        releases["date"] = pd.to_datetime(releases["date"])
+        releases["realtime_start"] = pd.to_datetime(releases["realtime_start"])
+        releases["value"] = pd.to_numeric(releases["value"], errors="coerce")
+        releases.to_parquet(cache_path)
+
+    out = {}
+    for q in quarters:
+        rows_t = releases[releases["date"] == q]
+        if rows_t.empty:
+            continue
+        first = rows_t.loc[rows_t["realtime_start"].idxmin()]
+        prev_q = q - pd.DateOffset(months=3)
+        rows_p = releases[(releases["date"] == prev_q)
+                          & (releases["realtime_start"] <= first["realtime_start"])]
+        if rows_p.empty:
+            continue
+        prev = rows_p.loc[rows_p["realtime_start"].idxmax()]
+        out[q] = {
+            "first_release_date": first["realtime_start"],
+            "first_release_ann": 400.0 * np.log(first["value"] / prev["value"]),
+        }
+    return pd.DataFrame.from_dict(out, orient="index").rename_axis("target_quarter")

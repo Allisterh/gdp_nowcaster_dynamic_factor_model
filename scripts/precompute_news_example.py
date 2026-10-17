@@ -33,7 +33,7 @@ import pandas as pd
 
 from src.model.dfm import compute_news, make_block_structure, prepare_dfm_data
 
-BEFORE_END = "2026-04-30"          # vintage window documented in Phase 3
+BEFORE_END = "2026-07-31"          # day after the Q2 advance GDP release → Q3 data flow
 OUTPUT_CSV  = Path("data/news_example.csv")
 OUTPUT_META = Path("data/news_example_meta.json")
 
@@ -69,8 +69,8 @@ def main() -> None:
     # Invariant (same as tests/test_news.py): per-series impacts sum to the
     # total "impact of news". Note this is NOT the full revision — the revision
     # additionally includes effects of revisions to previously-published
-    # observations, which have no per-series news row. For the Apr 30 window
-    # that residual is ~1.6e-5 quarterly (negligible, but nonzero).
+    # observations, which have no per-series news row (zero here, because the
+    # before set is a date-clipped copy of the after data).
     total = tidy["impact_qtr"].sum()
     total_news = float(news["news_results"].impacts["impact of news"].iloc[0])
     assert abs(total - total_news) < 1e-5, (

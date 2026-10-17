@@ -45,6 +45,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 import app.theme as th
+from src.backtest.evaluation import gdpnow_to_log_units
 from src.backtest.runner import compute_rmse_stats
 from src.model.baseline import ar1_nowcast, fit_ar1
 from src.model.dfm import (
@@ -70,7 +71,7 @@ except Exception:
 # the two questions that matter when the cloud deploy misbehaves: is this the
 # current build, and did the FRED key make it into the environment?
 print(
-    f"[startup] build=2026-07-01.2  "
+    f"[startup] build=2026-10-17.1  "
     f"FRED_API_KEY present: {bool(os.getenv('FRED_API_KEY'))}",
     flush=True,
 )
@@ -113,10 +114,11 @@ def _print_timings() -> None:
 
 DATA_DIR          = _PROJECT_ROOT / "data"
 BACKTEST_2F_CSV   = DATA_DIR / "backtest_results_2factor.csv"
-BACKTEST_1F_CSV   = DATA_DIR / "backtest_results.csv"
 GDPNOW_EOQ_CSV    = DATA_DIR / "gdpnow_eoq.csv"
 NEWS_EXAMPLE_CSV  = DATA_DIR / "news_example.csv"
 NEWS_EXAMPLE_META = DATA_DIR / "news_example_meta.json"
+EVAL_ACCURACY_CSV = DATA_DIR / "evaluation_accuracy.csv"
+EVAL_TESTS_CSV    = DATA_DIR / "evaluation_tests.csv"
 
 
 # ── Caching ────────────────────────────────────────────────────────────────────
@@ -148,12 +150,22 @@ def _load_backtest(path: Path) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _load_gdpnow_eoq() -> pd.DataFrame:
-    """End-of-quarter GDPNow vintages (pre-fetched by scripts/fetch_gdpnow.py)."""
+    """End-of-quarter GDPNow vintages (pre-fetched by scripts/fetch_gdpnow.py),
+    converted from GDPNow's compounded annual rate to this app's 4×log units."""
     if not GDPNOW_EOQ_CSV.exists():
         return pd.DataFrame()
     df = pd.read_csv(GDPNOW_EOQ_CSV)
     df["target_quarter"] = pd.to_datetime(df["target_quarter"])
+    df["gdpnow_ann"] = gdpnow_to_log_units(df["gdpnow_ann"])
     return df
+
+
+@st.cache_data(show_spinner=False)
+def _load_evaluation() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Scorecard from scripts/evaluate_backtest.py (empty frames if absent)."""
+    if not (EVAL_ACCURACY_CSV.exists() and EVAL_TESTS_CSV.exists()):
+        return pd.DataFrame(), pd.DataFrame()
+    return pd.read_csv(EVAL_ACCURACY_CSV), pd.read_csv(EVAL_TESTS_CSV)
 
 
 @st.cache_data(show_spinner=False)
@@ -454,13 +466,13 @@ def _build_backtest_fig(bt2: pd.DataFrame) -> go.Figure:
 
     # Focused scale with the worst miss stated on-chart (per the "don't hide
     # 2020" decision — it's printed, not hidden, and Full range shows it all).
-    q3 = bt2[bt2["quarter_label"] == "2020 Q3"]
+    y2020 = bt2[bt2["is_2020"]].dropna(subset=["dfm_error_ann"])
     note = None
-    if not q3.empty:
-        miss = float(q3["actual_ann"].iloc[0] - q3["dfm_nowcast_ann"].iloc[0])
-        note = (f"2020 beyond this scale — worst miss Q3: actual "
-                f"{q3['actual_ann'].iloc[0]:+.0f}% vs DFM "
-                f"{q3['dfm_nowcast_ann'].iloc[0]:+.0f}% ({miss:.0f} pp)")
+    if not y2020.empty:
+        w = y2020.loc[y2020["dfm_error_ann"].abs().idxmax()]
+        note = (f"2020 beyond this scale — worst miss {w['quarter_label']}: actual "
+                f"{w['actual_ann']:+.0f}% vs DFM {w['dfm_nowcast_ann']:+.0f}% "
+                f"({abs(w['dfm_error_ann']):.0f} pp)")
     dated = lambda col: pd.Series(bt2[col].values, index=bt2["target_quarter"])
     th.focused_yaxis(
         figb,
@@ -509,7 +521,9 @@ def _build_scatter_fig(bt2: pd.DataFrame) -> go.Figure:
     # Default to the normal-times cluster; the four 2020 points sit at ±30%
     # and would otherwise crush 40 quarters into the middle 10% of the plot.
     lim_n = float(np.nanmax(np.abs(ex20[["dfm_nowcast_ann", "actual_ann"]].values))) * 1.25
-    figs.update_xaxes(range=[-lim_n, lim_n])
+    # constrain="domain": keep the 1:1 aspect by shrinking the plot area,
+    # not by stretching the x-range far beyond the data.
+    figs.update_xaxes(range=[-lim_n, lim_n], constrain="domain")
     figs.update_yaxes(range=[-lim_n, lim_n])
     figs.update_layout(
         margin=dict(t=80),
@@ -528,41 +542,38 @@ def _build_scatter_fig(bt2: pd.DataFrame) -> go.Figure:
             ],
         )],
     )
+    n_out = int(((cov20[["dfm_nowcast_ann", "actual_ann"]].abs() > lim_n).any(axis=1)).sum())
     figs.add_annotation(
-        xref="paper", yref="paper", x=0.99, y=0.02,
-        text="4 COVID quarters outside this view — click “Include 2020”",
+        xref="paper", yref="paper", x=0.99, y=0.02, xanchor="right",
+        text=(f"{n_out} of 4 COVID quarters outside this view — click “Include 2020”"
+              if n_out else "All quarters shown"),
         showarrow=False, align="right",
         font=dict(size=11, color=th.TEXT_MUTED),
     )
     return figs
 
 
+MODEL_ORDER = ["DFM 2-factor", "DFM 1-factor", "Robust AR(1)", "Expanding mean",
+               "AR(1)", "GDPNow"]
+
+
 @st.cache_data(show_spinner=False)
-def _build_comparison_table(bt2: pd.DataFrame, bt1: pd.DataFrame) -> pd.DataFrame:
-    """Tab 4 model-comparison table (2f / 1f / AR(1) RMSE rows), as a plain
-    DataFrame — the Styler is applied outside the cache (Stylers don't pickle)."""
-    def _rmse(errors: pd.Series) -> float:
-        e = errors.dropna()
-        return float(np.sqrt((e ** 2).mean()))
-
-    def _col(df: pd.DataFrame, err_col: str) -> list[str]:
-        """One table column: RMSE ex-2020 / full / 2020-only + bias, formatted."""
-        ex20  = df.loc[~df["is_2020"], err_col]
-        covid = df.loc[df["is_2020"], err_col]
-        return [
-            f"{_rmse(ex20):.2f} pp",
-            f"{_rmse(df[err_col]):.2f} pp",
-            f"{_rmse(covid):.2f} pp",
-            f"{df[err_col].mean():+.2f} pp",
-        ]
-
-    row_labels = ["RMSE — ex-2020 (primary)", "RMSE — full sample",
-                  "RMSE — 2020 only", "Mean error (bias)"]
-    table = pd.DataFrame(index=row_labels)
-    table["DFM 2-factor (this app)"] = _col(bt2, "dfm_error_ann")
-    if not bt1.empty:
-        table["DFM 1-factor"] = _col(bt1, "dfm_error_ann")
-    table["AR(1) baseline"] = _col(bt2, "ar1_error_ann")
+def _build_comparison_table(acc: pd.DataFrame, target: str) -> pd.DataFrame:
+    """Rows = models, columns = RMSE by sample + ex-2020 bias, for one target.
+    Plain DataFrame — the Styler is applied outside the cache (Stylers don't pickle)."""
+    sub = acc[acc["target"] == target]
+    rmse = sub.pivot(index="model", columns="sample", values="rmse")
+    bias = sub.pivot(index="model", columns="sample", values="bias")
+    n    = sub.pivot(index="model", columns="sample", values="n")
+    table = pd.DataFrame({
+        "RMSE ex-2020":  rmse["ex-2020"].map("{:.2f}".format),
+        "RMSE full":     rmse["full"].map("{:.2f}".format),
+        "RMSE 2020":     rmse["2020 only"].map("{:.2f}".format),
+        "Bias ex-2020":  bias["ex-2020"].map("{:+.2f}".format),
+        "Quarters":      n["full"].astype(int).astype(str),
+    })
+    table = table.reindex([m for m in MODEL_ORDER if m in table.index])
+    table.index = [f"{m} (this app)" if m == "DFM 2-factor" else m for m in table.index]
     return table
 
 
@@ -573,7 +584,7 @@ def _render_news_result(tidy: pd.DataFrame, meta: dict, subtitle: str) -> None:
     c1.markdown(
         th.stat_card(f"Nowcast as of {meta['before_end']}",
                      f"{meta['before_nowcast_ann']:+.2f}%",
-                     "annualized, Kalman filter", accent=th.SLATE),
+                     "annualized, Kalman smoother", accent=th.SLATE),
         unsafe_allow_html=True,
     )
     c2.markdown(
@@ -585,7 +596,7 @@ def _render_news_result(tidy: pd.DataFrame, meta: dict, subtitle: str) -> None:
     c3.markdown(
         th.stat_card(f"Nowcast as of {meta['computed_on']}",
                      f"{meta['after_nowcast_ann']:+.2f}%",
-                     "annualized, Kalman filter", accent=th.NAVY),
+                     "annualized, Kalman smoother", accent=th.NAVY),
         unsafe_allow_html=True,
     )
 
@@ -792,9 +803,9 @@ with tab1:
         st.caption(
             "GDPNow values are unavailable before 2016 Q2 — FRED's archive (ALFRED) "
             "only began storing GDPNow vintages on 2016-05-17. "
-            "“Actual GDP” is the current-vintage GDPC1 series, which includes later BEA "
-            "revisions; the Phase 4 backtest found this inflicts a systematic ~2 pp "
-            "under-prediction bias on the model (details in the Backtest tab)."
+            "GDPNow is converted from its compounded annual rate to this chart's "
+            "4×log units. “Actual GDP” is today's revised GDPC1; the Backtest tab "
+            "also scores every model against GDP as first published."
         )
 
         with st.expander("Latest monthly indicator data (model inputs, last 6 months)"):
@@ -854,7 +865,7 @@ with tab2:
             '<div class="section-desc">Each pair of bars shows how strongly an '
             "indicator co-moves with each factor after the EM algorithm converges. "
             "<b style='color:#14365D'>Navy = global factor</b> (overall business-cycle "
-            "index that all 11 series load on); "
+            "index that all 11 indicators and GDP load on); "
             "<b style='color:#E8A33D'>amber = real-activity factor</b> (labour, output "
             "and spending sub-index). Survey indices and CPI load only on the global "
             "factor, so they show a single navy bar.</div>",
@@ -910,14 +921,19 @@ with tab3:
         example_tidy, example_meta = _load_news_example()
 
     if example_tidy is not None:
+        # Describe the example from its own numbers, so regenerating the CSV
+        # can never leave stale prose behind.
+        _imp = example_tidy["impact_ann"]
+        _up, _down = _imp.idxmax(), _imp.idxmin()
         with _timed("tab3_example_render"):
             _render_news_result(
                 example_tidy, example_meta,
                 subtitle=(
                     f"<b>Worked example — {example_meta['before_end']} → "
-                    f"{example_meta['computed_on']}:</b> a quiet vintage window. The weak "
-                    "May Philly Fed survey dragged the nowcast down, almost fully offset "
-                    "by a strong NY Fed Empire State reading — a net revision of just "
+                    f"{example_meta['computed_on']}</b>, nowcasting "
+                    f"{example_meta['target_quarter']}. Largest upward push: "
+                    f"{th.label_for(_up)} ({_imp[_up]:+.3f} pp); largest drag: "
+                    f"{th.label_for(_down)} ({_imp[_down]:+.3f} pp). Net revision "
                     f"{example_meta['revision_ann']:+.3f} pp."
                 ),
             )
@@ -1001,9 +1017,12 @@ with tab3:
                 )
 
     st.caption(
-        "Technical note: news impacts use the one-sided Kalman filter (conditioning "
-        "only on past data), while the Live Nowcast tab uses the smoother (all data). "
-        "The two differ numerically — both are correct; they answer different questions."
+        "Technical note: both nowcasts are Kalman-smoother estimates of the target "
+        "quarter's GDP, with model parameters held fixed, so the 'after' nowcast of a "
+        "window ending today equals the Live Nowcast. GDP releases are dated by "
+        "their advance-estimate timing; monthly series are clipped by observation "
+        "date, so a value for the month containing the cutoff may have been "
+        "published shortly after it."
     )
 
 
@@ -1029,23 +1048,46 @@ with tab4:
                  "Run scripts/run_phase4_backtest_2factor.py first.")
         st.stop()
 
+    acc, tests = _load_evaluation()
+
+    def _acc(model: str, target: str, sample: str, col: str) -> float | None:
+        if acc.empty:
+            return None
+        r = acc[(acc.model == model) & (acc.target == target) & (acc["sample"] == sample)]
+        return float(r[col].iloc[0]) if len(r) else None
+
+    def _test(bench: str, target: str = "current vintage", sample: str = "ex-2020"):
+        if tests.empty:
+            return None
+        r = tests[(tests.dfm_spec == "2-factor") & (tests.benchmark == bench)
+                  & (tests.target == target) & (tests["sample"] == sample)]
+        return r.iloc[0] if len(r) else None
+
     # ── Headline metric cards ──────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(
         th.stat_card("RMSE — ex-2020 (primary)", f"{stats['dfm_ex2020_rmse']:.2f} pp",
-                     "40 quarters, COVID excluded", accent=th.NAVY),
+                     "40 quarters vs today's revised GDP", accent=th.NAVY),
         unsafe_allow_html=True)
     c2.markdown(
         th.stat_card("RMSE — full sample", f"{stats['dfm_full_rmse']:.2f} pp",
                      "all 44 quarters incl. COVID", accent=th.SLATE),
         unsafe_allow_html=True)
+    bias_fr = _acc("DFM 2-factor", "first release", "ex-2020", "bias")
+    bias_cv = _acc("DFM 2-factor", "current vintage", "ex-2020", "bias")
     c3.markdown(
-        th.stat_card("Bias (mean error)", f"{stats['dfm_mean_error']:+.2f} pp",
-                     "vintage mismatch — see note", accent=th.BRICK),
+        th.stat_card("Bias vs first release, ex-2020",
+                     f"{bias_fr:+.2f} pp" if bias_fr is not None else "—",
+                     (f"{bias_cv:+.2f} pp vs today's revised GDP" if bias_cv is not None
+                      else "run scripts/evaluate_backtest.py"), accent=th.BRICK),
         unsafe_allow_html=True)
+    rob = _test("Robust AR(1)")
     c4.markdown(
-        th.stat_card("Skill vs AR(1), ex-2020", f"{stats['dfm_skill_ex2020']:+.2f} pp",
-                     "negative = AR(1) wins", accent=th.AMBER),
+        th.stat_card("vs robust AR(1), ex-2020",
+                     f"{rob['rmse_diff']:+.2f} pp" if rob is not None else "—",
+                     (f"Diebold–Mariano p = {rob['dm_pvalue']:.2f} · negative = DFM better"
+                      if rob is not None else "run scripts/evaluate_backtest.py"),
+                     accent=th.AMBER),
         unsafe_allow_html=True)
 
     st.markdown("<div style='height:1.0rem'></div>", unsafe_allow_html=True)
@@ -1060,33 +1102,55 @@ with tab4:
     st.markdown('<div class="section-header">Model comparison</div>',
                 unsafe_allow_html=True)
 
-    bt1 = _load_backtest(BACKTEST_1F_CSV)
-
-    with _timed("tab4_comparison_table"):
-        table = _build_comparison_table(bt2, bt1)
-        styled = (
-            table.style
-            .set_properties(**{"text-align": "right", "font-variant-numeric": "tabular-nums"})
-            .set_properties(subset=pd.IndexSlice[["RMSE — ex-2020 (primary)"], :],
-                            **{"font-weight": "700"})
-            .set_properties(subset=pd.IndexSlice[["RMSE — ex-2020 (primary)"],
-                                                 ["DFM 2-factor (this app)"]],
-                            **{"background-color": th.NAVY, "color": "white"})
+    if acc.empty:
+        st.info("Run `python scripts/evaluate_backtest.py` to generate the model scorecard.")
+    else:
+        target_label = st.radio(
+            "Score against",
+            ["Today's revised GDP", "GDP as first published"],
+            horizontal=True,
+            help="A nowcast made in real time is arguably aiming at the advance "
+                 "estimate BEA publishes a month later; today's GDP includes years "
+                 "of revisions. GDPNow is designed to hit the advance estimate.",
         )
-        st.table(styled)
+        target = "current vintage" if target_label.startswith("Today") else "first release"
+        with _timed("tab4_comparison_table"):
+            table = _build_comparison_table(acc, target)
+            styled = (
+                table.style
+                .set_properties(**{"text-align": "right", "font-variant-numeric": "tabular-nums"})
+                .set_properties(subset=pd.IndexSlice[["DFM 2-factor (this app)"], :],
+                                **{"font-weight": "700"})
+                .set_properties(subset=pd.IndexSlice[["DFM 2-factor (this app)"], ["RMSE ex-2020"]],
+                                **{"background-color": th.NAVY, "color": "white"})
+            )
+            st.table(styled)
+        st.caption(
+            "Annualized percentage points; bias = nowcast − actual. All benchmarks use "
+            "only data available on the evaluation date. GDPNow (Atlanta Fed, converted "
+            "to the same units) is archived only from 2016 Q2, so it is scored on fewer "
+            "quarters — see the Quarters column."
+        )
 
-    st.markdown(
-        '<div class="section-desc"><b>Reading this honestly:</b> the AR(1) baseline '
-        "actually beats both DFMs ex-2020 — predicting “roughly average growth” is "
-        "hard to beat in calm times with only 11 indicators (the NY Fed's production "
-        "model uses 127 series). The DFM's value shows in turbulent periods (lower "
-        "full-sample and 2020 RMSE) and in its interpretability: factors and news "
-        "decompositions, which no AR(1) can provide. The consistent ~−2 pp bias is a "
-        "data-vintage artifact: nowcasts were made from pre-revision ALFRED data but "
-        "scored against today's GDP figures, which the 2023 BEA comprehensive "
-        "revision lifted. Both models face it equally.</div>",
-        unsafe_allow_html=True,
-    )
+        mean_t, gn_t = _test("Expanding mean", target), _test("GDPNow", target)
+        rob_t, ar1_full = _test("Robust AR(1)", target), _test("AR(1)", target, "full")
+        if all(x is not None for x in (mean_t, gn_t, rob_t, ar1_full)):
+            st.markdown(
+                '<div class="section-desc"><b>Reading this honestly.</b> In normal '
+                "quarters the DFM is statistically indistinguishable from simple "
+                f"benchmarks: its RMSE gap to the robust AR(1) is {rob_t['rmse_diff']:+.2f} pp "
+                f"(95% bootstrap CI {rob_t['ci_lo']:+.2f} to {rob_t['ci_hi']:+.2f}, "
+                f"Diebold–Mariano p = {rob_t['dm_pvalue']:.2f}) and to the historical mean "
+                f"{mean_t['rmse_diff']:+.2f} pp (p = {mean_t['dm_pvalue']:.2f}). With 40 calm "
+                "quarters, gaps this size are within noise. Its large full-sample advantage "
+                f"(e.g. {ar1_full['rmse_diff']:+.2f} pp vs the AR(1)) comes from the four 2020 "
+                f"quarters and is not significant either (p = {ar1_full['dm_pvalue']:.2f}), "
+                "though unlike the simple benchmarks it called the direction of the 2020 "
+                f"collapse and rebound in real time. GDPNow, built on far more source data, "
+                f"beats it by {gn_t['rmse_diff']:.2f} pp (p = {gn_t['dm_pvalue']:.2f}, "
+                f"n = {int(gn_t['n'])}).</div>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
 
@@ -1101,33 +1165,29 @@ with tab4:
     st.caption(
         "Points above the dashed 45° line = the model under-predicted. The view "
         "opens on the 40 normal quarters; “Include 2020” widens the axes to the "
-        "four COVID quarters, whose ±30% swings dwarf everything else. They are "
+        "2020 extremes, whose ±30% swings dwarf everything else. They are "
         "in every reported statistic — defaulted out of the view, never out of "
         "the results."
     )
 
     with st.expander("Full results table — all 44 quarters"):
-        display = bt2[[
-            "quarter_label", "dfm_nowcast_ann", "ar1_nowcast_ann",
-            "actual_ann", "dfm_error_ann", "is_2020", "converged",
-        ]].rename(columns={
-            "quarter_label":   "Quarter",
-            "dfm_nowcast_ann": "DFM (%)",
-            "ar1_nowcast_ann": "AR(1) (%)",
-            "actual_ann":      "Actual (%)",
-            "dfm_error_ann":   "Error (pp)",
-            "is_2020":         "COVID quarter",
-            "converged":       "EM converged",
-        })
-        st.dataframe(
-            display.style.format({
-                "DFM (%)":    "{:+.2f}",
-                "AR(1) (%)":  "{:+.2f}",
-                "Actual (%)": "{:+.2f}",
-                "Error (pp)": "{:+.2f}",
-            }),
-            width="stretch", hide_index=True,
-        )
+        cols = {
+            "quarter_label":          "Quarter",
+            "dfm_nowcast_ann":        "DFM (%)",
+            "ar1_robust_nowcast_ann": "Robust AR(1) (%)",
+            "mean_nowcast_ann":       "Hist. mean (%)",
+            "ar1_nowcast_ann":        "AR(1) (%)",
+            "first_release_ann":      "First release (%)",
+            "actual_ann":             "Actual today (%)",
+            "dfm_error_ann":          "DFM error (pp)",
+            "is_2020":                "COVID quarter",
+            "converged":              "EM converged",
+        }
+        display = bt2[[c for c in cols if c in bt2.columns]].rename(columns=cols)
+        num = {c: "{:+.2f}" for c in display.columns if c.endswith("(%)") or c.endswith("(pp)")}
+        st.dataframe(display.style.format(num, na_rep="—"), width="stretch", hide_index=True)
+        st.caption("Growth rates are annualized 4×log changes (BEA's headline rate "
+                   "compounds instead; the two differ noticeably only in 2020).")
 
 
 # ── Footer ─────────────────────────────────────────────────────────────────────

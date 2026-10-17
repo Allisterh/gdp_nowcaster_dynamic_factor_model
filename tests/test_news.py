@@ -246,6 +246,34 @@ class TestNewsIntegration:
             "This indicates a methodological error in the news decomposition."
         )
 
+    def test_news_targets_quarter_end_and_runs_forward(self):
+        """
+        Regression for three 2026-10 news bugs:
+          * impacts must be measured at the target quarter's LAST month;
+          * the decomposition must run before → after (the 'after' estimate
+            must come from the full-information results), not backwards;
+          * a window spanning several months must attribute the revision to
+            many series (a misspelled `impact_dates` keyword silently moved
+            the impact date to the end of the before-sample, where only the
+            GDP release registered).
+        """
+        from src.model.dfm import compute_news
+
+        result = compute_news(before_end="2026-04-30", start="2000-01-01", use_cache=True)
+        news_obj = result["news_results"]
+        target = result["target_date"]
+
+        assert target.month % 3 == 0, f"impact month {target} is not a quarter end"
+        assert news_obj.impacts.index.get_level_values("impact date")[0] == target
+
+        full_info = news_obj.updated.get_prediction(
+            start=target, end=target, information_set="smoothed",
+        ).predicted_mean["GDPC1"].iloc[0]
+        assert result["after_nowcast_qtr"] == pytest.approx(float(full_info), abs=1e-10)
+
+        n_series = result["impacts"].reset_index()["updated variable"].nunique()
+        assert n_series >= 5, f"only {n_series} series registered as news"
+
     def test_blocked_dfm_better_than_single_factor(self):
         """
         The blocked 2-factor DFM must have higher log-likelihood than

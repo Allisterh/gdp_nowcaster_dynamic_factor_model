@@ -20,8 +20,10 @@ Availability caveat (verified 2026-06-11):
   as NaN. The dashboard's GDPNow line simply starts at 2016 Q2.
 
 Units:
-  GDPNOW is already annualized %-growth (SAAR) — same units as our
-  dfm_nowcast_ann column. No transformation needed.
+  GDPNOW is a compounded annual rate, (Y_t/Y_{t-1})^4 − 1, as BEA reports.
+  This project's columns are 4×log growth. Stored here as published; convert
+  with src.backtest.evaluation.gdpnow_to_log_units() before comparing (the gap
+  is < 0.1 pp in normal quarters but ~10 pp in 2020 Q2).
 
 Run:  source .venv/bin/activate && python scripts/fetch_gdpnow.py
       (~40 ALFRED calls on first run, throttled; cached in data/alfred/ after.)
