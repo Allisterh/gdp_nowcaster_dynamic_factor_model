@@ -38,3 +38,4 @@ data/*
 # OS / editor
 .DS_Store
 .vscode/
+site/

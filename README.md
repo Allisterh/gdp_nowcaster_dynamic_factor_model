@@ -1,6 +1,6 @@
 # Nowcasting US GDP with a Mixed-Frequency Dynamic Factor Model
 
-**🔗 Live dashboard:** [https://gdpnowcaster-xpcr3k8uwqbdjtgm9imdee.streamlit.app/](https://gdpnowcaster-xpcr3k8uwqbdjtgm9imdee.streamlit.app/)
+**🔗 Live nowcast:** [https://jrussellgoodman.github.io/gdp_nowcaster/](https://jrussellgoodman.github.io/gdp_nowcaster/) — updated daily
 
 A real-time estimate of current-quarter US real GDP growth, built with a
 mixed-frequency dynamic factor model (DFM) estimated by Kalman filter and the

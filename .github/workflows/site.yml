@@ -1,0 +1,52 @@
+name: site
+
+# Rebuilds the public page from the latest data and publishes it to GitHub
+# Pages. Runs daily after the morning US data releases (8:30 ET), on every
+# push to main, and on demand (Actions tab → site → Run workflow).
+# Needs: repo secret FRED_API_KEY; Settings → Pages → Source: GitHub Actions.
+
+on:
+  schedule:
+    - cron: "30 14 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install pinned dependencies
+        run: pip install -r requirements.txt
+      - name: Build the page from today's data
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python scripts/build_site.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
