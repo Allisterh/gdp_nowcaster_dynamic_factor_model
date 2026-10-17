@@ -333,7 +333,7 @@ def build_vintage_dfm_data(
         raise ValueError(
             f"No monthly vintage data loaded for as_of={as_of_date} — every FRED "
             "series came back empty. This almost always means FRED_API_KEY is "
-            "missing or invalid (check .env locally, or Streamlit Cloud Secrets)."
+            "missing or invalid (check .env locally, or the repo's Actions secrets)."
         )
     first_valid = non_empty.index[0]
     monthly_df  = monthly_df.loc[first_valid:]

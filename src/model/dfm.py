@@ -167,8 +167,8 @@ def prepare_dfm_data(
         raise ValueError(
             "No monthly data was loaded — every FRED series came back empty. "
             "This almost always means FRED_API_KEY is missing or invalid. "
-            "Locally: check your .env file. On Streamlit Cloud: set FRED_API_KEY "
-            "under Manage app → Settings → Secrets, then reboot the app."
+            "Locally: check your .env file. In GitHub Actions: set the FRED_API_KEY "
+            "repository secret (Settings → Secrets and variables → Actions)."
         )
     first_valid = non_empty.index[0]
     monthly_df  = monthly_df.loc[first_valid:]

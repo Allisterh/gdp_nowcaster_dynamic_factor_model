@@ -118,8 +118,8 @@ on data up to time $t$, $\mathbb{E}[f_t \mid x_{1:t}]$, by recursively
 alternating a *prediction* step and an *update* step that corrects the
 prediction by the forecast error (the "innovation") weighted by the Kalman
 gain. The **Kalman smoother** then runs backward to condition on the *full*
-sample, $\mathbb{E}[f_t \mid x_{1:T}]$ — this is what the dashboard plots as the
-factors. The nowcast itself is the smoothed estimate of GDP growth at the
+sample, $\mathbb{E}[f_t \mid x_{1:T}]$ — this is what the live page plots as the
+hidden business cycle. The nowcast itself is the smoothed estimate of GDP growth at the
 **last month of the target quarter**, where the model stores quarterly GDP,
 converted back from the model's standardized units (`extract_nowcast` in
 `src/model/dfm.py`).
@@ -155,7 +155,7 @@ surprise is multiplied by a Kalman-gain-derived **weight** $w_j$ to give that
 release's **impact** on the nowcast. The impacts provably sum to the part of
 the revision due to new data (verified in `tests/test_news.py` to a tolerance
 of $10^{-5}$); both nowcasts are smoothed estimates with parameters held fixed,
-so the "after" nowcast equals the Live Nowcast. This is
+so the "after" nowcast equals the live estimate. This is
 the same decomposition the NY Fed publishes each week, turning "the nowcast
 moved" into "*here is which release moved it, and by how much*."
 
@@ -396,7 +396,7 @@ Full grid (both targets, both DFM specs): `data/evaluation_tests.csv`.
 4. **GDPNow is better**, by 0.88 pp RMSE against first-release GDP (p = 0.01),
    unsurprisingly for a model built bottom-up from far more source data.
 5. **The second factor doesn't pay off out of sample.** The one-factor model
-   ties ex-2020 and is clearly better in 2020. The dashboard keeps the
+   ties ex-2020 and is clearly better in 2020. The live page keeps the
    two-factor model because it was the design chosen before the backtest;
    switching on the basis of these results would be selecting on the test set.
 
@@ -447,18 +447,12 @@ code (`tests/test_dfm.py::TestExtractNowcastRealFit`,
 
 ### 3.6 Charts
 
-The Streamlit dashboard renders these interactively; static versions live in
-[`docs/figures/`](docs/figures/).
+The [live page](https://jrussellgoodman.github.io/gdp_nowcaster/) shows the current
+quarter's nowcast, what moved it, its accuracy and the hidden business cycle,
+rebuilt daily. Static figures live in [`docs/figures/`](docs/figures/).
 
-**Real-time track record — DFM vs. AR(1) vs. actual, 2015–2025** (the dashboard adds GDPNow)
+**Real-time track record — DFM vs. AR(1) vs. actual, 2015–2025**
 ![Backtest track record](docs/figures/phase4_backtest_2factor.png)
-
-**Live dashboard — nowcast, factors, news, and backtest tabs**
-| Live Nowcast | The Factors |
-|---|---|
-| ![Live nowcast tab](docs/figures/after_redesign_tab1.png) | ![Factors tab](docs/figures/after_redesign_tab2.png) |
-| **News Decomposition** | **Backtest** |
-| ![News tab](docs/figures/after_redesign_tab3.png) | ![Backtest tab](docs/figures/after_redesign_tab4.png) |
 
 ---
 
@@ -480,16 +474,17 @@ pip install -r requirements.txt
 # 4. Add your FRED API key
 cp .env.example .env               # then edit .env and set FRED_API_KEY=...
 
-# 5. Launch the dashboard
-streamlit run app/streamlit_app.py
+# 5. Build the page from today's data and preview it
+python scripts/build_site.py
+python -m http.server -d site 8765    # then open http://localhost:8765
 ```
 
-On first load the app downloads the FRED series (cached to `data/` afterward)
-and fits the DFM by EM, which takes ~30 seconds; subsequent interactions are
-near-instant thanks to in-memory caching.
+The build downloads the latest data, fits the model and writes `site/index.html`
+(about a minute). The same script runs daily in GitHub Actions to publish the
+live page.
 
 ```bash
-# Unit tests only (94 tests, no API key needed — what CI runs)
+# Unit tests only (123 tests, no API key needed — what CI runs)
 pytest -q -m "not integration"
 
 # Everything, incl. 16 integration tests that fit real models on FRED/ALFRED data
@@ -502,7 +497,6 @@ pytest -q
 python scripts/run_phase4_backtest.py           # 1-factor → data/backtest_results.csv
 python scripts/run_phase4_backtest_2factor.py   # 2-factor → data/backtest_results_2factor.csv
 python scripts/evaluate_backtest.py             # scorecard → data/evaluation_*.csv
-python scripts/precompute_news_example.py       # dashboard's worked news example
 python scripts/run_horizon_backtest.py          # 448 through-the-quarter nowcasts (~15 min)
 python scripts/evaluate_horizon.py              # horizon accuracy, calibration, figures
 ```
@@ -520,10 +514,10 @@ src/
   data/      FRED/ALFRED fetching, transforms, mixed-frequency panel
   model/     DynamicFactorMQ wrapper, AR(1) baseline, news decomposition
   backtest/  real-time vintage backtest, look-ahead checks, evaluation statistics
-app/         Streamlit dashboard (streamlit_app.py, theme.py, styles.css)
+site_template/  the public page (HTML); filled in by src/site_builder.py
 tests/       pytest suite + published-value sanity checks
-docs/        progress log, design system, figures
-scripts/     backtests, evaluation, diagnostics, data prep, screenshots
+docs/        progress log, figures
+scripts/     backtests, evaluation, diagnostics, data prep, page build
 ```
 
 ---
@@ -557,7 +551,7 @@ scripts/     backtests, evaluation, diagnostics, data prep, screenshots
 - **Local maxima / convergence.** EM is run to a fixed tolerance and can stop at
   a local optimum; in a few quarters the maximum-iteration cap is reached. The
   factors are identified only up to a sign reversal, so loading *signs* across
-  the two factors follow opposite conventions (documented in the dashboard).
+  the two factors follow opposite conventions (the page shows the global factor signed so recessions are negative).
 - **Not an official forecast.** This is a student research project built as a
   learning tool, not investment or policy advice.
 

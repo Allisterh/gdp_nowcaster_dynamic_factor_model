@@ -17,7 +17,7 @@ Availability caveat (verified 2026-06-11):
   The first GDPNow vintage in ALFRED is 2016-05-17 — GDPNow existed earlier,
   but FRED only began archiving it then. The first 5 backtest quarters
   (2015 Q1 – 2016 Q1) therefore have no end-of-quarter value and are stored
-  as NaN. The dashboard's GDPNow line simply starts at 2016 Q2.
+  as NaN. Comparisons with GDPNow therefore start at 2016 Q2.
 
 Units:
   GDPNOW is a compounded annual rate, (Y_t/Y_{t-1})^4 − 1, as BEA reports.

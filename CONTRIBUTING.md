@@ -28,8 +28,6 @@ Order matters — each step reads the previous step's output:
 | 2 | `python scripts/run_phase4_backtest_2factor.py` | `data/backtest_results_2factor.csv`, `docs/figures/phase4_backtest_2factor.png` |
 | 3 | `python scripts/rerun_failed_quarters.py` | only if steps 1–2 report failed quarters |
 | 4 | `python scripts/evaluate_backtest.py` | `data/evaluation_accuracy.csv`, `data/evaluation_tests.csv` |
-| 5 | `python scripts/precompute_news_example.py` | `data/news_example.csv`, `data/news_example_meta.json` |
-| 6 | `streamlit run app/streamlit_app.py --server.port 8599`, then `python scripts/screenshot_tabs.py after_redesign` | `docs/figures/after_redesign_tab{1-4}.png` |
 
 Through-the-quarter evaluation (after step 2):
 
@@ -57,10 +55,10 @@ downloads them with throttling and automatic back-off for FRED's rate limit
 (a few minutes); they are cached in `data/alfred/` and never change, so later
 runs take about a minute. `data/raw/` caches current FRED data. Both folders
 are gitignored; only the small result files listed in `.gitignore` are
-committed, because the deployed dashboard reads them.
+committed, because the README and the live page use them.
 
 **After a rerun** update the numbers in `README.md` (abstract, §3) and add a
-dated entry to `docs/progress.md`. The dashboard reads the CSVs directly.
+dated entry to `docs/progress.md`. The live page reads `data/horizon_backtest.csv` directly.
 
 ## Ground rules for results
 

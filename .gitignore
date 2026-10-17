@@ -22,8 +22,6 @@ data/*
 !data/backtest_results.csv
 !data/backtest_results_2factor.csv
 !data/gdpnow_eoq.csv
-!data/news_example.csv
-!data/news_example_meta.json
 !data/evaluation_accuracy.csv
 !data/evaluation_tests.csv
 !data/horizon_backtest.csv
