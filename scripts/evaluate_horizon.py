@@ -10,6 +10,9 @@ Reads data/horizon_backtest.csv (scripts/run_horizon_backtest.py) and writes:
                              averaged within each quarter, because nowcasts of
                              the same quarter are not independent.
   data/calibration.csv       68% / 90% interval coverage, CRPS, mean band width
+  data/calibration_by_period.csv  same, split 2015–19 / 2020 / 2021–25 —
+                             POST-HOC (added after seeing the results; not
+                             part of the pre-registered design)
   docs/figures/horizon_rmse.png       RMSE vs days until GDP release
   docs/figures/fan_chart_example.png  nowcast path + bands, most recent quarter
   docs/figures/pit_histogram.png      PIT histogram (calibration check)
@@ -111,6 +114,24 @@ def calibration_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def calibration_by_period(df: pd.DataFrame) -> pd.DataFrame:
+    """Post-hoc: do the bands adapt to calm vs crisis periods? (first-release target)"""
+    periods = {"2015–2019": df["target_quarter"] < "2020-01-01",
+               "2020": df["is_2020"],
+               "2021–2025": df["target_quarter"] >= "2021-01-01"}
+    rows = []
+    for model, se_col in DFM_SE.items():
+        for name, mask in periods.items():
+            sub = df.loc[mask, [MODELS[model], se_col, "first_release_ann"]].dropna()
+            m, s_, y = sub[MODELS[model]], sub[se_col], sub["first_release_ann"]
+            rows.append({"model": model, "period": name, "n": len(sub),
+                         "mean_se": float(s_.mean()), "rmse": rmse(m - y),
+                         "coverage_68": interval_coverage(m, s_, y, 0.68),
+                         "coverage_90": interval_coverage(m, s_, y, 0.90),
+                         "crps": gaussian_crps(m, s_, y)})
+    return pd.DataFrame(rows)
+
+
 def plot_horizon_rmse(df: pd.DataFrame) -> None:
     sub = df[~df["is_2020"]].copy()
     edges = np.arange(0, 136, 15)
@@ -183,6 +204,8 @@ def main() -> None:
     acc.round(4).to_csv(DATA / "horizon_accuracy.csv", index=False)
     tests.round(4).to_csv(DATA / "horizon_tests.csv", index=False)
     cal.round(4).to_csv(DATA / "calibration.csv", index=False)
+    by_period = calibration_by_period(df)
+    by_period.round(4).to_csv(DATA / "calibration_by_period.csv", index=False)
     plot_horizon_rmse(df)
     fan_q = plot_fan_chart(df)
     plot_pit(df)
@@ -201,6 +224,8 @@ def main() -> None:
     print("\n=== Calibration (DFM 2-factor, ex-2020, first release) ===")
     c = cal[(cal["model"] == "DFM 2-factor") & (cal["sample"] == "ex-2020") & (cal["target"] == "first release")]
     print(c[["horizon", "n", "coverage_68", "coverage_90", "mean_se", "rmse", "crps", "mae"]].round(2).to_string(index=False))
+    print("\n=== POST-HOC: calibration by period (DFM 2-factor, first release) ===")
+    print(by_period[by_period.model == "DFM 2-factor"].drop(columns="model").round(2).to_string(index=False))
 
 
 if __name__ == "__main__":

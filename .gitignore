@@ -30,6 +30,7 @@ data/*
 !data/horizon_accuracy.csv
 !data/horizon_tests.csv
 !data/calibration.csv
+!data/calibration_by_period.csv
 
 # Jupyter
 .ipynb_checkpoints/
