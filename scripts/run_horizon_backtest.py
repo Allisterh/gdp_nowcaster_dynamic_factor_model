@@ -17,9 +17,13 @@ Per row: 2-factor and 1-factor DFM nowcasts with Kalman-smoother standard
 errors, three real-time baselines, GDPNow as published that day (converted to
 4×log units), and both scoring targets.
 
+Data: instead of ~5,000 per-date ALFRED requests (~2 s each, rate-limited),
+each series' full revision history is fetched once and every vintage is
+rebuilt locally (src/backtest/vintage.py: materialize_vintages). The rebuilt
+vintages were checked against 1,036 directly-fetched ones: all identical.
+
 Output: data/horizon_backtest.csv. Resumable — rows already present are
-skipped, and results are saved after every quarter. The first run downloads
-~5,000 ALFRED files (rate-limited, roughly an hour); later runs are fast.
+skipped, and results are saved after every quarter.
 
 Run:  python scripts/run_horizon_backtest.py
 """
@@ -41,40 +45,13 @@ from src.backtest.runner import (  # noqa: E402
     load_first_release,
     run_single_quarter,
 )
-from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-
-from src.backtest.vintage import (  # noqa: E402
-    ALFRED_CACHE_DIR,
-    fetch_gdpnow_vintage,
-    fetch_vintage_series,
-)
+from src.backtest.vintage import fetch_gdpnow_vintage, materialize_vintages  # noqa: E402
 from src.data.fred_loader import SERIES_CATALOG  # noqa: E402
 
 OUTPUT = ROOT / "data" / "horizon_backtest.csv"
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
-
-
-def prefetch(jobs: list[tuple[str, str]], workers: int = 3) -> None:
-    """
-    Download missing ALFRED vintages in parallel. Each request takes ~2 s, so a
-    single thread uses only ~25 of FRED's 120 requests/minute; 3 threads stay
-    under the limit (fetch_vintage_series also backs off on HTTP 429).
-    """
-    missing = [(s, d) for s, d in jobs if not (ALFRED_CACHE_DIR / f"{s}_{d}.parquet").exists()]
-    print(f"Prefetching {len(missing)} ALFRED vintages with {workers} threads…", flush=True)
-
-    def get(job):
-        try:
-            fetch_vintage_series(job[0], job[1])
-        except Exception:
-            pass                      # e.g. series absent from ALFRED that early; handled later
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for i, _ in enumerate(ex.map(get, missing), 1):
-            if i % 250 == 0:
-                print(f"  {i}/{len(missing)}", flush=True)
 
 
 def main() -> None:
@@ -92,7 +69,10 @@ def main() -> None:
             for q in quarters}
     jobs = [(s, str(d.date())) for q in reversed(quarters) for d in grid[q]
             for s in list(SERIES_CATALOG) + (["GDPNOW"] if d >= pd.Timestamp("2016-05-17") else [])]
-    prefetch(jobs)
+    # One revision-history request per series rebuilds every needed vintage
+    # (validated equal to direct per-date ALFRED fetches on 1,036 files).
+    print(f"Materialized {materialize_vintages(jobs)} vintage files from revision histories.",
+          flush=True)
 
     rows = []
     for q in quarters:

@@ -422,3 +422,33 @@ class TestHorizonGrid:
         assert pd.Timestamp("2019-12-31") in d
         assert max(d) < pd.Timestamp("2020-01-30")
         assert all((b - a).days <= 14 for a, b in zip(d, d[1:]))
+
+
+class TestVintageReconstruction:
+
+    @staticmethod
+    def _releases():
+        d = pd.to_datetime
+        return pd.DataFrame({
+            "date":           d(["2020-01-01", "2020-01-01", "2020-02-01", "2020-03-01", "2020-03-01"]),
+            "realtime_start": d(["2020-02-07", "2020-03-06", "2020-03-06", "2020-04-03", "2020-05-08"]),
+            "value":          [10.0, 11.0, 12.0, 13.0, np.nan],
+        })
+
+    def test_uses_latest_value_published_by_date(self):
+        from src.backtest.vintage import vintage_from_releases
+        s = vintage_from_releases(self._releases(), "2020-03-10", "X")
+        assert list(s.index) == list(pd.to_datetime(["2020-01-01", "2020-02-01"]))
+        assert list(s.values) == [11.0, 12.0]            # Jan revised on Mar 6
+
+    def test_keeps_published_blank_instead_of_older_value(self):
+        """A later blank ('.') replaces the earlier value — groupby().last() would not."""
+        from src.backtest.vintage import vintage_from_releases
+        s = vintage_from_releases(self._releases(), "2020-05-08", "X")
+        assert pd.isna(s.loc["2020-03-01"])
+        assert vintage_from_releases(self._releases(), "2020-05-07", "X").loc["2020-03-01"] == 13.0
+
+    def test_nothing_published_raises(self):
+        from src.backtest.vintage import vintage_from_releases
+        with pytest.raises(ValueError):
+            vintage_from_releases(self._releases(), "2020-02-01", "X")

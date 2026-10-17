@@ -471,3 +471,85 @@ def fetch_gdp_first_release(
             "first_release_ann": 400.0 * np.log(first["value"] / prev["value"]),
         }
     return pd.DataFrame.from_dict(out, orient="index").rename_axis("target_quarter")
+
+
+# ── Reconstructing vintages from one revision-history request ─────────────────
+#
+# Fetching each (series, date) vintage separately costs one ALFRED request
+# (~2 s, rate-limited) per file; the through-the-quarter backtest needs ~5,000.
+# ALFRED can instead return a series' full revision history in ONE request:
+# every (observation date, value, realtime_start) ever published. The vintage
+# as of day d is then: for each observation, the most recent value whose
+# realtime_start ≤ d; observations with no such value were not yet published.
+# materialize_vintages() writes those reconstructions into the same per-file
+# cache fetch_vintage_series() reads, so nothing downstream changes.
+# tests/test_backtest.py checks the reconstruction logic; scripts/
+# run_horizon_backtest.py verifies it against directly-fetched vintages.
+
+RELEASES_FROM = "2014-01-01"     # vintages needed start in 2015
+
+
+def fetch_all_releases(series_id: str, use_cache: bool = True) -> pd.DataFrame:
+    """Every published value of series_id since RELEASES_FROM (one ALFRED call)."""
+    path = ALFRED_CACHE_DIR / f"{series_id}_all_releases.parquet"
+    if use_cache and path.exists():
+        return pd.read_parquet(path)
+    api_key = os.getenv("FRED_API_KEY")
+    if not api_key:
+        raise EnvironmentError("FRED_API_KEY not set. Check your .env file.")
+    logger.info("ALFRED fetch: all releases of %s", series_id)
+    rel = Fred(api_key=api_key).get_series_all_releases(series_id, realtime_start=RELEASES_FROM)
+    rel = rel[["date", "realtime_start", "value"]].copy()
+    rel["date"] = pd.to_datetime(rel["date"])
+    rel["realtime_start"] = pd.to_datetime(rel["realtime_start"])
+    rel["value"] = pd.to_numeric(rel["value"], errors="coerce")
+    rel.to_parquet(path)
+    time.sleep(0.6)
+    return rel
+
+
+def vintage_from_releases(releases: pd.DataFrame, as_of_date, series_id: str) -> pd.Series:
+    """
+    The series as it stood on as_of_date, rebuilt from its revision history.
+    Same shape as a direct ALFRED vintage fetch (raw values, DatetimeIndex
+    from _ALFRED_FETCH_FROM). Raises ValueError if nothing was published yet.
+    """
+    as_of = pd.Timestamp(as_of_date)
+    known = releases[(releases["realtime_start"] <= as_of)
+                     & (releases["date"] >= pd.Timestamp(_ALFRED_FETCH_FROM))]
+    if known.empty:
+        raise ValueError(f"No {series_id} values published by {as_of.date()}.")
+    # Keep the latest row per observation EVEN IF its value is missing ("."):
+    # ALFRED publishes explicit blanks (e.g., Oct 2025 data skipped in the
+    # shutdown) and dropping them would let a later diff span two months.
+    # (groupby().last() would silently skip the blank and return an older value.)
+    latest = (known.sort_values(["date", "realtime_start"])
+                   .drop_duplicates("date", keep="last")
+                   .set_index("date")["value"])
+    if latest.isna().all():
+        raise ValueError(f"No {series_id} values published by {as_of.date()}.")
+    latest.index = pd.DatetimeIndex(latest.index)
+    latest.index.name = None
+    return latest.rename(series_id).astype(float)
+
+
+def materialize_vintages(jobs: list[tuple[str, str]], use_cache: bool = True) -> int:
+    """
+    Write per-(series, date) vintage cache files from revision histories, for
+    every job not already cached. Returns the number of files written.
+    """
+    by_series: dict[str, list[str]] = {}
+    for sid, d in jobs:
+        if not _alfred_cache_path(sid, d).exists():
+            by_series.setdefault(sid, []).append(d)
+    written = 0
+    for sid, dates in by_series.items():
+        releases = fetch_all_releases(sid, use_cache=use_cache)
+        for d in dates:
+            try:
+                s = vintage_from_releases(releases, d, sid)
+            except ValueError:
+                continue                 # not yet published: leave uncached (handled as before)
+            s.to_frame().to_parquet(_alfred_cache_path(sid, d))
+            written += 1
+    return written

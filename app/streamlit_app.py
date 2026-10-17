@@ -119,6 +119,9 @@ NEWS_EXAMPLE_CSV  = DATA_DIR / "news_example.csv"
 NEWS_EXAMPLE_META = DATA_DIR / "news_example_meta.json"
 EVAL_ACCURACY_CSV = DATA_DIR / "evaluation_accuracy.csv"
 EVAL_TESTS_CSV    = DATA_DIR / "evaluation_tests.csv"
+HORIZON_CSV       = DATA_DIR / "horizon_backtest.csv"
+CALIBRATION_CSV   = DATA_DIR / "calibration.csv"
+HORIZON_TESTS_CSV = DATA_DIR / "horizon_tests.csv"
 
 
 # ── Caching ────────────────────────────────────────────────────────────────────
@@ -158,6 +161,45 @@ def _load_gdpnow_eoq() -> pd.DataFrame:
     df["target_quarter"] = pd.to_datetime(df["target_quarter"])
     df["gdpnow_ann"] = gdpnow_to_log_units(df["gdpnow_ann"])
     return df
+
+
+@st.cache_data(show_spinner=False)
+def _load_horizon() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Through-the-quarter backtest + its calibration and test tables (empty if absent)."""
+    if not (HORIZON_CSV.exists() and CALIBRATION_CSV.exists() and HORIZON_TESTS_CSV.exists()):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    hz = pd.read_csv(HORIZON_CSV, parse_dates=["target_quarter", "evaluation_date", "release_date"])
+    return hz, pd.read_csv(CALIBRATION_CSV), pd.read_csv(HORIZON_TESTS_CSV)
+
+
+@st.cache_data(show_spinner=False)
+def _build_horizon_fig(hz: pd.DataFrame) -> go.Figure:
+    """RMSE vs days until the GDP release (15-day bins, ex-2020, first-release target)."""
+    sub = hz[~hz["is_2020"]].copy()
+    edges = np.arange(0, 136, 15)
+    sub["bin"] = pd.cut(sub["days_to_release"], edges)
+    centers = (edges[:-1] + edges[1:]) / 2
+    lines = [("DFM 2-factor (this model)", "dfm_nowcast_ann", th.COLOR_DFM, 3.0),
+             ("GDPNow", "gdpnow_nowcast_ann", th.COLOR_GDPNOW, 2.2),
+             ("Robust AR(1)", "ar1_robust_nowcast_ann", th.COLOR_AR1, 1.8),
+             ("Historical mean", "mean_nowcast_ann", th.BRICK, 1.6)]
+    fig = go.Figure()
+    for name, col, color, width in lines:
+        r = sub.groupby("bin", observed=False).apply(
+            lambda g: float(np.sqrt(((g[col] - g["first_release_ann"]) ** 2).mean()))
+            if g[col].notna().sum() >= 10 else np.nan)
+        fig.add_trace(go.Scatter(
+            x=centers, y=r.values, name=name, mode="lines+markers",
+            line=dict(color=color, width=width), marker=dict(size=6),
+            hovertemplate=f"{name}: %{{y:.2f}} pp<extra>%{{x:.0f}} days before release</extra>",
+        ))
+    th.apply_layout(fig, height=420, x_title="Days until the quarter's first GDP release",
+                    y_title="RMSE vs first-release GDP (pp)")
+    fig.update_xaxes(autorange="reversed")
+    fig.update_layout(hovermode="closest")
+    fig.add_vline(x=30, line_dash="dot", line_color=th.SLATE,
+                  annotation_text="≈ quarter ends", annotation_position="top")
+    return fig
 
 
 @st.cache_data(show_spinner=False)
@@ -619,6 +661,22 @@ def _render_news_result(tidy: pd.DataFrame, meta: dict, subtitle: str) -> None:
         st.dataframe(detail.style.format("{:+.4f}"), width="stretch")
 
 
+def _band_text(nowcast: dict) -> str:
+    """Hero subtitle: the 68% band, and how often such bands held in the backtest."""
+    se = nowcast.get("nowcast_se_ann", float("nan"))
+    if not np.isfinite(se):
+        return "annualized · updates with each data release"
+    lo, hi = nowcast["nowcast_ann_pct"] - 0.994 * se, nowcast["nowcast_ann_pct"] + 0.994 * se
+    text = f"annualized · model's 68% band {lo:+.1f}% to {hi:+.1f}%"
+    _, cal, _ = _load_horizon()
+    if not cal.empty:
+        r = cal[(cal.model == "DFM 2-factor") & (cal.target == "first release")
+                & (cal["sample"] == "ex-2020") & (cal.horizon == "all horizons")]
+        if len(r):
+            text += f" · such bands held {r['coverage_68'].iloc[0]:.0%} of the time historically"
+    return text
+
+
 # ── Page setup ─────────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -757,8 +815,7 @@ with tab1:
             th.hero_number(
                 f"DFM nowcast · {nowcast['quarter']} real GDP growth",
                 f"{dfm_ann:+.2f}%",
-                f"annualized · {nowcast['nowcast_qtr_pct']:+.3f}% quarterly · "
-                "updates with each data release",
+                _band_text(nowcast),
             ),
             unsafe_allow_html=True,
         )
@@ -1091,6 +1148,42 @@ with tab4:
         unsafe_allow_html=True)
 
     st.markdown("<div style='height:1.0rem'></div>", unsafe_allow_html=True)
+
+    # ── Accuracy as data arrives (through-the-quarter backtest) ───────────────
+    hz, cal, hz_tests = _load_horizon()
+    if not hz.empty:
+        st.markdown('<div class="section-header">Accuracy as data arrives</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-desc">Every quarter was also nowcast every two weeks '
+            f"from its first day until the day before its GDP release — {len(hz)} nowcasts, "
+            "each from that day's archived data. This is how nowcasting models are "
+            "normally judged: error should fall as the quarter's data comes in. Scored "
+            "against GDP as first published; 2020 excluded.</div>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(_build_horizon_fig(hz), width="stretch", config=th.PLOTLY_BASE_CONFIG)
+
+        c = cal[(cal.model == "DFM 2-factor") & (cal.target == "first release")
+                & (cal["sample"] == "ex-2020")].set_index("horizon")
+        if not c.empty:
+            show = pd.DataFrame({
+                "Nowcasts":             c["n"].astype(int).astype(str),
+                "68% band covered":     c["coverage_68"].map("{:.0%}".format),
+                "90% band covered":     c["coverage_90"].map("{:.0%}".format),
+                "Typical band (± pp)":  c["mean_se"].map("{:.2f}".format),
+                "CRPS (pp)":            c["crps"].map("{:.2f}".format),
+            })
+            st.markdown('<div class="section-header">Are the uncertainty bands honest?</div>',
+                        unsafe_allow_html=True)
+            st.table(show.style.set_properties(**{"text-align": "right"}))
+            st.caption(
+                "A well-calibrated 68% band should contain the outcome about 68% of the time. "
+                "These bands come from the Kalman smoother and ignore uncertainty about the "
+                "model's own parameters, so they are expected to be somewhat too narrow. "
+                "CRPS scores the whole forecast distribution (lower is better; equals the "
+                "absolute error when the band has zero width)."
+            )
 
     # ── Main chart: nowcast vs actual through time ─────────────────────────────
     with _timed("tab4_backtest_fig_build"):
