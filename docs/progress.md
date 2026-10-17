@@ -302,6 +302,19 @@ Design fixed BEFORE any results were computed (commit this entry first):
   candidate next step: stochastic volatility (not implemented; would be a new,
   pre-registered spec).
 
+## Phase 9 — Editorial redesign as a static page (2026-10-17)
+- [x] Design chosen with the owner over four rounds of questions: light "warm paper"
+      research note, all-serif, one scrolling story, minimal text, deep-red accent for
+      the model, static with hover values. Sections: hero (this quarter's nowcast path
+      vs GDPNow, live number labelled) → what moved it → how accurate → how it works
+      (hidden business cycle). Bug story and calibration detail stay on GitHub.
+- [x] site_template/index.html + src/site_builder.py + scripts/build_site.py: every
+      sentence generated from the data; hero path from real-time vintages.
+- [x] .github/workflows/site.yml: daily rebuild → GitHub Pages
+      (https://jrussellgoodman.github.io/gdp_nowcaster/). Needs repo secret FRED_API_KEY
+      and Pages source = GitHub Actions.
+- [ ] Retire the Streamlit app once the page is live (owner deletes it on share.streamlit.io).
+
 ## Notes / Decisions Log
 (Add dated notes here as decisions are made, e.g. "2026-06-15: reduced to 3
 factors due to slow EM convergence with 5.")

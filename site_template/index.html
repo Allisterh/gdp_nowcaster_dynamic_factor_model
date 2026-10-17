@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>US GDP Nowcast</title>
+<meta name="description" content="__DESCRIPTION__">
+<style>
+  :root {
+    --paper: #f7f1e6; --card: #fbf7f0; --ink: #1f1b17; --body: #2b2622;
+    --soft: #5b5249; --muted: #8a7f72; --rule: #d6cab8; --grid: #e4dbcc;
+    --accent: #a8322d; --bench: #b9ad9c;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body { margin: 0; background: var(--paper); color: var(--body);
+         font-family: Georgia, "Times New Roman", serif; line-height: 1.55; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 40px; }
+  .kicker { font-size: 13px; letter-spacing: .08em; color: var(--accent); margin: 0 0 10px; }
+  h1 { font-size: 36px; font-weight: 500; line-height: 1.15; color: var(--ink); margin: 0 0 12px; }
+  .byline { font-size: 14px; color: var(--muted); margin: 0 0 24px; padding-bottom: 16px;
+            border-bottom: 1px solid var(--rule); }
+  h2 { font-size: 24px; font-weight: 500; color: var(--ink); margin: 48px 0 6px; }
+  .one { font-size: 17px; color: var(--soft); margin: 0 0 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; color: var(--soft); margin: 0 0 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .sw-line { width: 16px; height: 0; border-top: 2px solid var(--accent); }
+  .sw-dash { width: 16px; height: 0; border-top: 2px dashed var(--muted); }
+  .sw-dot  { width: 16px; height: 0; border-top: 2px dotted var(--bench); }
+  .chart { position: relative; width: 100%; }
+  .caption { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  .steps { display: grid; grid-template-columns: 1fr 22px 1fr 22px 1fr; align-items: center;
+           gap: 6px; margin: 8px 0 16px; text-align: center; font-size: 14px; color: var(--soft); }
+  .step { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 8px; background: var(--card); }
+  .step b { display: block; font-weight: 500; color: var(--ink); font-size: 15px; }
+  .step.hl { border-color: var(--accent); } .step.hl b { color: var(--accent); }
+  .arrow { color: var(--accent); font-size: 18px; }
+  footer { margin-top: 56px; padding-top: 14px; border-top: 1px solid var(--rule);
+           font-size: 13px; color: var(--muted); }
+  footer a { color: var(--soft); }
+  @media (max-width: 560px) {
+    main { padding: 32px 16px; } h1 { font-size: 28px; } h2 { font-size: 21px; }
+    .steps { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">US GDP NOWCAST</p>
+  <h1 id="headline"></h1>
+  <p class="byline" id="byline"></p>
+
+  <div class="legend">
+    <span><span class="sw-line"></span>This model (68% range shaded)</span>
+    <span><span class="sw-dash"></span>Atlanta Fed GDPNow</span>
+  </div>
+  <div class="chart" style="height:320px"><canvas id="hero" role="img" aria-label="How this quarter's GDP nowcast has evolved"></canvas></div>
+  <p class="caption" id="hero-caption"></p>
+
+  <h2>What moved the estimate</h2>
+  <p class="one" id="news-line"></p>
+  <div class="chart" id="news-box"><canvas id="news" role="img" aria-label="Contribution of each data release to the change in the nowcast"></canvas></div>
+  <p class="caption" id="news-caption"></p>
+
+  <h2>How accurate is it?</h2>
+  <p class="one" id="acc-line"></p>
+  <div class="legend">
+    <span><span class="sw-line"></span>This model</span>
+    <span><span class="sw-dash"></span>Atlanta Fed GDPNow</span>
+    <span><span class="sw-dot"></span>Simple benchmark</span>
+  </div>
+  <div class="chart" style="height:280px"><canvas id="acc" role="img" aria-label="Typical nowcast error by days before the GDP release"></canvas></div>
+  <p class="caption" id="acc-caption"></p>
+
+  <h2>How it works</h2>
+  <p class="one">The model finds one hidden business cycle in 11 monthly indicators and translates it into GDP growth.</p>
+  <div class="steps">
+    <div class="step"><b>11 monthly indicators</b>jobs, output, spending, surveys</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step"><b>1 hidden cycle</b>what they share</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step hl"><b>GDP nowcast</b>this quarter's growth</div>
+  </div>
+  <div class="chart" style="height:240px"><canvas id="factor" role="img" aria-label="The model's business-cycle index since 2000, dipping in each recession"></canvas></div>
+  <p class="caption">Never told when recessions happened (shaded), the cycle finds them anyway. 2020 extends beyond the scale.</p>
+
+  <footer>
+    Data: FRED and ALFRED (Federal Reserve Bank of St. Louis); Atlanta Fed GDPNow.
+    Method: mixed-frequency dynamic factor model after Bok et al. (2018), estimated with statsmodels.
+    Not an official forecast. Code, full results and methods:
+    <a href="https://github.com/jrussellgoodman/gdp_nowcaster">github.com/jrussellgoodman/gdp_nowcaster</a>.
+    <br><span id="built"></span>
+  </footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const DATA = __DATA__;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ACC = css('--accent'), MUT = css('--muted'), GRID = css('--grid'), BENCH = css('--bench'),
+      SOFT = css('--soft'), RULE = css('--rule'), SERIF = "Georgia, 'Times New Roman', serif";
+Chart.defaults.font.family = SERIF; Chart.defaults.font.size = 12; Chart.defaults.color = MUT;
+const pct = v => (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+const text = (id, s) => { document.getElementById(id).textContent = s; };
+
+text('headline', DATA.headline);
+text('byline', DATA.byline);
+text('hero-caption', DATA.hero_caption);
+text('news-line', DATA.news_line);
+text('news-caption', DATA.news_caption);
+text('acc-line', DATA.acc_line);
+text('acc-caption', DATA.acc_caption);
+text('built', DATA.built);
+
+const axes = (yMin, yMax, yFmt) => ({
+  x: { grid: { display: false }, border: { color: RULE }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 9 } },
+  y: { min: yMin, max: yMax, grid: { color: GRID }, border: { display: false }, ticks: { callback: yFmt } },
+});
+const tip = { backgroundColor: '#fffaf2', titleColor: '#1f1b17', bodyColor: SOFT,
+              borderColor: RULE, borderWidth: 1, padding: 10, titleFont: { family: SERIF }, bodyFont: { family: SERIF } };
+
+/* Hero: this quarter's nowcast path, latest point called out */
+(() => {
+  const P = DATA.path, z = 0.994;
+  const hi = P.map(p => p.nowcast + z * p.se), lo = P.map(p => p.nowcast - z * p.se);
+  const vals = [...hi, ...lo, ...P.map(p => p.gdpnow)].filter(v => v != null);
+  const yMin = 2 * Math.floor(Math.min(...vals, 0) / 2), yMax = 2 * Math.ceil(Math.max(...vals) / 2);
+  const lastOf = i => { const d = c => c.getDatasetMeta(i).data.filter((_, k) => c.data.datasets[i].data[k] != null); return d; };
+  const endLabels = { id: 'endLabels', afterDatasetsDraw(c) {
+    const g = c.ctx, m = lastOf(2)(c).pop(), gn = lastOf(3)(c).pop();
+    const gnVal = [...P].reverse().find(p => p.gdpnow != null);
+    let ym = m.y, yg = gn ? gn.y : null;
+    if (gn && Math.abs(ym - yg) < 44) {                 // keep the two labels apart
+      const mid = (ym + yg) / 2, up = ym < yg ? -1 : 1;
+      ym = mid + up * 22; yg = mid - up * 22;
+    }
+    const x = c.chartArea.right + 12;
+    g.save(); g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillStyle = ACC; g.beginPath(); g.arc(m.x, m.y, 5.5, 0, 7); g.fill();
+    g.font = '500 30px ' + SERIF; g.fillText(pct(DATA.latest), x, ym - 6);
+    g.font = '12px ' + SERIF; g.fillStyle = MUT; g.fillText('latest estimate', x, ym + 15);
+    if (gn) { g.font = '13px ' + SERIF; g.fillText('GDPNow ' + pct(gnVal.gdpnow), x, yg); }
+    g.restore();
+  } };
+  new Chart(document.getElementById('hero'), {
+    type: 'line',
+    data: { labels: P.map(p => p.label), datasets: [
+      { data: hi, borderWidth: 0, pointRadius: 0, clip: false },
+      { data: lo, borderWidth: 0, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(168,50,45,.12)' },
+      { data: P.map(p => p.nowcast), borderColor: ACC, borderWidth: 2.4, pointRadius: 3, pointBackgroundColor: ACC, tension: .25 },
+      { data: P.map(p => p.gdpnow), borderColor: MUT, borderDash: [5, 4], borderWidth: 1.7, pointRadius: 2.5, pointBackgroundColor: MUT },
+    ] },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      layout: { padding: { top: 10, right: 118 } },
+      plugins: { legend: { display: false }, tooltip: { ...tip,
+        filter: t => t.datasetIndex >= 2 && t.raw != null,
+        callbacks: { label: t => t.datasetIndex === 2
+          ? `This model ${pct(t.raw)}  (68% range ${pct(lo[t.dataIndex])} to ${pct(hi[t.dataIndex])})`
+          : `GDPNow ${pct(t.raw)}` } } },
+      scales: { ...axes(yMin, yMax, v => v + '%'), y: { min: yMin, max: yMax, grid: { color: GRID }, border: { display: false }, ticks: { stepSize: 2, callback: v => v + '%' } } } },
+    plugins: [endLabels],
+  });
+})();
+
+/* What moved the estimate */
+(() => {
+  const N = DATA.news;
+  document.getElementById('news-box').style.height = (N.length * 30 + 50) + 'px';
+  const m = Math.max(0.05, Math.ceil(Math.max(...N.map(n => Math.abs(n.impact))) * 1.1 * 20) / 20);
+  new Chart(document.getElementById('news'), {
+    type: 'bar',
+    data: { labels: N.map(n => n.label), datasets: [{ data: N.map(n => n.impact),
+      backgroundColor: N.map(n => n.impact >= 0 ? ACC : BENCH), borderRadius: 3, barThickness: 16 }] },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { ...tip,
+        callbacks: { label: t => `${t.raw >= 0 ? '+' : ''}${t.raw.toFixed(3)} percentage points` } } },
+      scales: { x: { min: -m, max: m, grid: { color: GRID }, border: { display: false },
+                     ticks: { callback: v => (v > 0 ? '+' : '') + v.toFixed(2) } },
+                y: { grid: { display: false }, border: { color: RULE }, ticks: { color: SOFT, font: { size: 13 } } } } },
+  });
+})();
+
+/* How accurate is it? */
+(() => {
+  const A = DATA.accuracy;
+  const ds = (k, color, dash, w, pr) => ({ data: A.map(a => a[k]), borderColor: color, borderDash: dash,
+    borderWidth: w, pointRadius: pr, pointBackgroundColor: color, spanGaps: false });
+  new Chart(document.getElementById('acc'), {
+    type: 'line',
+    data: { labels: A.map(a => a.days + ' days'), datasets: [
+      ds('model', ACC, [], 2.4, 3), ds('gdpnow', MUT, [5, 4], 1.8, 2.5), ds('benchmark', BENCH, [2, 3], 1.8, 0) ] },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { ...tip, filter: t => t.raw != null,
+        callbacks: { title: t => `${t[0].label} before the GDP release`,
+          label: t => `${['This model', 'GDPNow', 'Simple benchmark'][t.datasetIndex]}: ${t.raw.toFixed(2)} pts` } } },
+      scales: { ...axes(DATA.acc_ymin, DATA.acc_ymax, v => v.toFixed(1)),
+                y: { min: DATA.acc_ymin, max: DATA.acc_ymax, grid: { color: GRID }, border: { display: false },
+                     ticks: { stepSize: 0.2, callback: v => v.toFixed(1) } },
+                x: { grid: { display: false }, border: { color: RULE }, ticks: { maxRotation: 0 },
+                     title: { display: true, text: 'Days before the first official GDP estimate', color: MUT } } } },
+  });
+})();
+
+/* The hidden cycle */
+(() => {
+  const F = DATA.factor, lab = F.map(f => f.date);
+  const shade = { id: 'shade', beforeDatasetsDraw(c) {
+    const { ctx, chartArea: a, scales: { x } } = c; ctx.save(); ctx.fillStyle = 'rgba(138,127,114,.16)';
+    DATA.recessions.forEach(([s, e]) => {
+      const i0 = lab.indexOf(s), i1 = lab.indexOf(e);
+      if (i0 < 0) return;
+      const x0 = x.getPixelForValue(i0), x1 = i1 < 0 || i1 + 1 >= lab.length ? a.right : x.getPixelForValue(i1 + 1);
+      ctx.fillRect(x0, a.top, Math.max(x1 - x0, 4), a.bottom - a.top);
+    }); ctx.restore();
+  } };
+  new Chart(document.getElementById('factor'), {
+    type: 'line',
+    data: { labels: lab, datasets: [{ data: F.map(f => Math.max(-3, Math.min(3, f.value))),
+      borderColor: ACC, borderWidth: 2, pointRadius: 0, tension: .2 }] },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { ...tip,
+        callbacks: { title: t => F[t[0].dataIndex].label, label: t => `Cycle index ${F[t.dataIndex].value.toFixed(2)}` } } },
+      scales: { x: { grid: { display: false }, border: { color: RULE },
+                     ticks: { maxRotation: 0, autoSkip: false, callback: (v, i) => lab[i].endsWith('-01') && +lab[i].slice(0, 4) % 5 === 0 ? lab[i].slice(0, 4) : '' } },
+                y: { min: -3, max: 3, grid: { color: GRID }, border: { display: false }, ticks: { stepSize: 1 } } } },
+    plugins: [shade],
+  });
+})();
+</script>
+</body>
+</html>

@@ -43,6 +43,14 @@ and rebuilds every needed vintage locally. Delete those files to refresh them.
 
 Optional diagnostic: `python scripts/diagnose_information_timing.py`.
 
+## The public page
+
+`python scripts/build_site.py` writes `site/index.html` (about a minute; needs
+`FRED_API_KEY`). Preview it with `python -m http.server -d site 8765` and open
+http://localhost:8765. The page itself is `site_template/index.html`; all numbers
+and sentences come from `src/site_builder.py`. GitHub Actions (`site.yml`)
+rebuilds and publishes it daily.
+
 **Data and caching.** Each backtest quarter uses the ALFRED vintage from the
 last day of that quarter (12 series × 44 quarters ≈ 530 files). The first run
 downloads them with throttling and automatic back-off for FRED's rate limit
